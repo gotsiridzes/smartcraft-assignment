@@ -23,7 +23,7 @@ public sealed class TaskClaimer(
     // One statement: pick due tasks (or tasks whose lease expired) without waiting on rows other
     // workers hold, then take the lease and count the attempt. Times come from the database clock.
     private const string ClaimSql = """
-        WITH next AS (
+        WITH due AS (
             SELECT id
             FROM export_tasks
             WHERE (status = 'Pending' AND next_attempt_at <= now())
@@ -38,8 +38,8 @@ public sealed class TaskClaimer(
             locked_by = $3,
             lease_until = now() + $4,
             attempts = t.attempts + 1
-        FROM next
-        WHERE t.id = next.id
+        FROM due
+        WHERE t.id = due.id
         RETURNING t.id, t.job_id, t.attempts, t.lease_token
         """;
 
