@@ -37,13 +37,10 @@ public sealed class ExportProcessor(
 
     private async Task ProcessAsync(ClaimedTask task, string workerId)
     {
-        using var scope = logger.BeginScope(new Dictionary<string, object>
-        {
-            ["TaskId"] = task.Id,
-            ["JobId"] = task.JobId,
-            ["WorkerId"] = workerId,
-            ["Attempt"] = task.Attempts,
-        });
+        // A message-template scope renders as readable text and still carries each value as a field.
+        using var scope = logger.BeginScope(
+            "Export task {TaskId} for job {JobId} by worker {WorkerId}, attempt {Attempt}",
+            task.Id, task.JobId, workerId, task.Attempts);
 
         var settings = options.Value;
 

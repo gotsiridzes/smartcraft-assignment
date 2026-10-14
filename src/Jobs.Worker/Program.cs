@@ -4,14 +4,27 @@ using Jobs.Worker.Accounting;
 
 var builder = Host.CreateApplicationBuilder(args);
 
-// JSON lines with scopes, so TaskId / JobId / WorkerId / Attempt follow one export across instances.
+// Scopes carry TaskId / JobId / WorkerId / Attempt, so one export can be followed across instances.
+// Development: one readable line per entry. Elsewhere: JSON lines for a log collector.
 builder.Logging.ClearProviders();
-builder.Logging.AddJsonConsole(console =>
+if (builder.Environment.IsDevelopment())
 {
-    console.IncludeScopes = true;
-    console.TimestampFormat = "yyyy-MM-ddTHH:mm:ss.fffZ ";
-    console.UseUtcTimestamp = true;
-});
+    builder.Logging.AddSimpleConsole(console =>
+    {
+        console.IncludeScopes = true;
+        console.SingleLine = true;
+        console.TimestampFormat = "HH:mm:ss.fff ";
+    });
+}
+else
+{
+    builder.Logging.AddJsonConsole(console =>
+    {
+        console.IncludeScopes = true;
+        console.TimestampFormat = "yyyy-MM-ddTHH:mm:ss.fffZ";
+        console.UseUtcTimestamp = true;
+    });
+}
 
 builder.Services.AddJobsPersistence(sp => sp.GetRequiredService<IConfiguration>().GetConnectionString("Jobs")
     ?? throw new InvalidOperationException("Connection string 'Jobs' is not configured."));
