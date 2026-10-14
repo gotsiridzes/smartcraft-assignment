@@ -4,8 +4,8 @@
     <LangVersion>latest</LangVersion>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <!-- Includes NuGet audit warnings (NU1901-NU1904): a vulnerable package, even a transitive one, fails the build. -->
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
-    <!-- Vulnerability advisories on transitive packages should be visible, not break the build. -->
-    <WarningsNotAsErrors>$(WarningsNotAsErrors);NU1901;NU1902;NU1903;NU1904</WarningsNotAsErrors>
+    <NuGetAuditMode>all</NuGetAuditMode>
   </PropertyGroup>
 </Project>

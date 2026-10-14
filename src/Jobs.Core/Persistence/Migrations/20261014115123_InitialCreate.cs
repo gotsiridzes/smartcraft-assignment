@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using Microsoft.EntityFrameworkCore.Migrations;
 
 #nullable disable
@@ -120,18 +120,6 @@ namespace Jobs.Core.Persistence.Migrations
                 });
 
             migrationBuilder.CreateIndex(
-                name: "ix_invoices_idempotency_key",
-                schema: "fake_accounting",
-                table: "invoices",
-                column: "idempotency_key",
-                unique: true);
-
-            migrationBuilder.CreateIndex(
-                name: "ix_jobs_status_created_at",
-                table: "jobs",
-                columns: new[] { "status", "created_at" });
-
-            migrationBuilder.CreateIndex(
                 name: "ix_export_tasks_job_id",
                 table: "export_tasks",
                 column: "job_id",
@@ -143,9 +131,21 @@ namespace Jobs.Core.Persistence.Migrations
                 columns: new[] { "status", "next_attempt_at" });
 
             migrationBuilder.CreateIndex(
+                name: "ix_invoices_idempotency_key",
+                schema: "fake_accounting",
+                table: "invoices",
+                column: "idempotency_key",
+                unique: true);
+
+            migrationBuilder.CreateIndex(
                 name: "ix_job_lines_job_id",
                 table: "job_lines",
                 column: "job_id");
+
+            migrationBuilder.CreateIndex(
+                name: "ix_jobs_status_created_at",
+                table: "jobs",
+                columns: new[] { "status", "created_at" });
         }
 
         /// <inheritdoc />
