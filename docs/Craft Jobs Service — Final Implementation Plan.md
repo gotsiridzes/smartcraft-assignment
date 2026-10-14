@@ -25,7 +25,7 @@ The v1 design holds: one invariant (exactly one invoice per completed job), DB-a
 12. **v1 test 1 never exercises the idempotency key.** Failures before the invoice is written never cause a replay, and "no duplicate keys" is guaranteed by the unique constraint itself, so it is tautological. Fix: the fake supports **fail-before** and **fail-after** (invoice written, response "lost"). The test asserts replay count > 0 and exactly one invoice per **job_id**. A 500 ms lease with latency up to 600 ms forces real lease takeovers under contention.
 13. **Test 2 without sleeping.** Expire the lease with `UPDATE export_tasks SET lease_until = now() - interval '1 second'`.
 14. **One Postgres container for the whole suite** (`ICollectionFixture`), truncating between tests.
-15. **Tests interleaved with build steps** (domain tests in step 1, test 3 right after the API), so the end is not a 40-minute cliff.
+15. **Tests interleaved with build steps** (domain tests in step 1, test 3 right after the API), so each step ends with proof that it works.
 
 ### Stack and tooling updates
 
@@ -40,7 +40,7 @@ The v1 design holds: one invariant (exactly one invoice per completed job), DB-a
 
 ### Scope change
 
-24. **Line edit and delete move into scope** (v1 had them as next steps): `PATCH /jobs/{id}/lines/{lineId}` and `DELETE /jobs/{id}/lines/{lineId}`, both guarded by the **job's** If-Match and both bumping `Job.Version`. Removing the last line leaves the job InProgress, so "Complete needs at least one line" is now a real runtime check, not just defence in depth. Costs about 15 minutes; slack drops from 30 to 10 minutes.
+24. **Line edit and delete move into scope** (v1 had them as next steps): `PATCH /jobs/{id}/lines/{lineId}` and `DELETE /jobs/{id}/lines/{lineId}`, both guarded by the **job's** If-Match and both bumping `Job.Version`. Removing the last line leaves the job InProgress, so "Complete needs at least one line" is now a real runtime check, not just defence in depth.
 
 ---
 
@@ -66,11 +66,11 @@ Flow: office creates a **job** → workers add, correct or remove **lines** (lab
 
 ## 3. Scope
 
-**In scope:** jobs + lines with add, edit and delete; state machine; the eight endpoints; Idempotency-Key on create; mandatory If-Match on writes; worker with SKIP LOCKED claim, lease, fencing, backoff + jitter, dead-letter; fake accounting with idempotency and fail-before/fail-after injection; tests 1–3 and 5 (must), 4 and 6 (stretch); docker-compose with `--scale worker=3`; README; `requests.http` demo file; `/health`.
+**In scope:** jobs + lines with add, edit and delete; state machine; the eight endpoints; Idempotency-Key on create; mandatory If-Match on writes; worker with SKIP LOCKED claim, lease, fencing, backoff + jitter, dead-letter; fake accounting with idempotency and fail-before/fail-after injection; tests 1–6; docker-compose with `--scale worker=3`; README; `requests.http` demo file; `/health`.
 
 **Simplified:** list returns a fixed 50, newest first; idempotency has no "in progress" state (the unique index serialises duplicates); fake accounting shares the database in its own schema; single currency; PATCH (job and line) uses `application/json` with null = unchanged (not JSON Merge Patch); lines are hard-deleted (no audit trail); one API instance in compose.
 
-**Out of scope (next steps):** RabbitMQ + outbox relay + inbox; auth and multi-tenancy; keyset paging; line change history / soft delete; OpenTelemetry; idempotency key TTL; dead-letter replay; lease heartbeat; `If-None-Match`/304; CI (stretch).
+**Out of scope (next steps):** RabbitMQ + outbox relay + inbox; auth and multi-tenancy; keyset paging; line change history / soft delete; OpenTelemetry; idempotency key TTL; dead-letter replay; lease heartbeat; `If-None-Match`/304; CI.
 
 **Decisions**
 
@@ -299,14 +299,16 @@ Delivery to accounting is at-least-once; the effect is exactly-once. `export_tas
 
 Real PostgreSQL via Testcontainers (`postgres:17-alpine`), one container per run (`ICollectionFixture<PostgresFixture>`), migrations applied once, `TRUNCATE … CASCADE` of all five tables before each test. API tests use `WebApplicationFactory<Program>` with `UseSetting("ConnectionStrings:Jobs", …)`; `Program` exposes `public partial class Program;`.
 
-| # | Test | Setup | Assertions | Priority |
-| --- | --- | --- | --- | --- |
-| 1 | Exactly-once under contention | 200 jobs seeded via domain methods and completed; 4 concurrent `ProcessBatchAsync` loops with distinct worker ids; test options; fake FailBefore 10 %, FailAfter 10 %, latency 0–600 ms vs 500 ms lease; poll until nothing is Pending/Processing (60 s timeout) | 200 tasks Succeeded; 200 jobs Exported; exactly one invoice per `job_id`; each task's `external_invoice_id` matches its invoice; invoice total = job total; `ReplayCount > 0` | Must |
-| 2 | Stale lease is fenced | 1 completed job; worker A claims; SQL expires the lease; worker B claims (new token) and completes | A's complete and fail both return 0 rows; one invoice; task Succeeded, `locked_by` = B, attempts = 2 | Must |
-| 3 | Lost update prevented | Create job; two parallel PATCH with `If-Match: "1"` | Status codes {200, 412}; final ETag `"2"` (both race paths end in 412) | Must |
-| 4 | Idempotent create | Same key and body in parallel; then same key, different body | One job; identical 201 bodies and ETags; then 422 | Stretch |
-| 5 | Domain rules | `Job` unit tests | First line → InProgress; edit/remove line recalculates total; removing the last line blocks Complete; unknown line id → LineNotFound; add/edit/remove all frozen after Complete; each change bumps Version; total rounding | Must, cheap |
-| 6 | Header contract | PATCH without If-Match; POST without key; DELETE line on completed job; PATCH line with stale ETag | 428; 400; 409; 412 | Nice |
+| # | Test | Setup | Assertions |
+| --- | --- | --- | --- |
+| 1 | Exactly-once under contention | 200 jobs seeded via domain methods and completed; 4 concurrent `ProcessBatchAsync` loops with distinct worker ids; test options; fake FailBefore 10 %, FailAfter 10 %, latency 0–600 ms vs 500 ms lease; poll until nothing is Pending/Processing (60 s timeout) | 200 tasks Succeeded; 200 jobs Exported; exactly one invoice per `job_id`; each task's `external_invoice_id` matches its invoice; invoice total = job total; `ReplayCount > 0` |
+| 2 | Stale lease is fenced | 1 completed job; worker A claims; SQL expires the lease; worker B claims (new token) and completes | A's complete and fail both return 0 rows; one invoice; task Succeeded, `locked_by` = B, attempts = 2 |
+| 3 | Lost update prevented | Create job; two parallel PATCH with `If-Match: "1"` | Status codes {200, 412}; final ETag `"2"` (both race paths end in 412) |
+| 4 | Idempotent create | Same key and body in parallel; then same key, different body | One job; identical 201 bodies and ETags; then 422 |
+| 5 | Domain rules | `Job` unit tests | First line → InProgress; edit/remove line recalculates total; removing the last line blocks Complete; unknown line id → LineNotFound; add/edit/remove all frozen after Complete; each change bumps Version; total rounding |
+| 6 | Header contract | PATCH without If-Match; POST without key; DELETE line on completed job; PATCH line with stale ETag | 428; 400; 409; 412 |
+
+Tests 1–3 are the proof of the design: they cover exactly-once export, fencing and lost-update protection.
 
 Cite test 1 in the README's AI section as the verification of AI-written worker code.
 
@@ -323,22 +325,16 @@ Cite test 1 in the README's AI section as the verification of AI-written worker 
 
 ---
 
-## 12. Build order (3 h 50 m + 10 m slack; commit after each step)
+## 12. Build order
 
-- [ ] **0. Setup, 15 m.** `global.json`, `Directory.Build.props`, `Directory.Packages.props`, `.slnx`, four projects, compose with postgres only, README skeleton, `docs/ai-log.md`.
-- [ ] **1. Domain + persistence + test 5, 40 m.** Entities, state machine including `UpdateLine` / `RemoveLine`, EF configs (naming convention, `ValueGeneratedNever`, concurrency token, unique indexes, check constraints, precision), `InitialCreate` migration (`dotnet ef migrations add InitialCreate -p src/Jobs.Core -s src/Jobs.Api -o Persistence/Migrations`), domain unit tests.
-- [ ] **2. API, 45 m.** All eight endpoints (line PATCH/DELETE share the write handler pattern), ETag helpers, ProblemDetails and exception handler, validation, OpenAPI + Swagger UI, `/health`, `--migrate` mode, API Dockerfile, compose `migrate` + `api`, `requests.http`.
-- [ ] **3. Idempotency, 20 m.** Key row in the same transaction, replay with headers, 422.
-- [ ] **4. Test infrastructure + test 3, 20 m.** Postgres fixture, API factory, lost-update test.
-- [ ] **5. Worker + fake accounting, 45 m.** Options, claimer, processor, backoff, dead-letter, fake with fail-before/after, log scopes, worker Dockerfile, compose worker.
-- [ ] **6. Tests 1 and 2, 25 m.** Then tests 4 and 6 if time allows.
-- [ ] **7. README, 20 m.**
-
-**Cut order if behind** (first cut first): tests 4 and 6 → list endpoint → latency/takeover chaos in test 1 (keep fail-before/after) → log scope polish → jitter → Swagger UI and `/health`.
-
-**Never cut:** tests 1–3, fencing, fail-after mode, attempts counted at claim, line add/edit/delete, README.
-
-With only 10 minutes of slack, decide at the end of step 3: if it ran more than 10 minutes over, cut tests 4 and 6 straight away.
+- [ ] **0. Setup.** `global.json`, `Directory.Build.props`, `Directory.Packages.props`, `.slnx`, four projects, compose with postgres only, README skeleton, `docs/ai-log.md`.
+- [ ] **1. Domain + persistence + test 5.** Entities, state machine including `UpdateLine` / `RemoveLine`, EF configs (naming convention, `ValueGeneratedNever`, concurrency token, unique indexes, check constraints, precision), `InitialCreate` migration (`dotnet ef migrations add InitialCreate -p src/Jobs.Core -s src/Jobs.Api -o Persistence/Migrations`), domain unit tests.
+- [ ] **2. API.** All eight endpoints (line PATCH/DELETE share the write handler pattern), ETag helpers, ProblemDetails and exception handler, validation, OpenAPI + Swagger UI, `/health`, `--migrate` mode, API Dockerfile, compose `migrate` + `api`, `requests.http`.
+- [ ] **3. Idempotency.** Key row in the same transaction, replay with headers, 422.
+- [ ] **4. Test infrastructure + test 3.** Postgres fixture, API factory, lost-update test.
+- [ ] **5. Worker + fake accounting.** Options, claimer, processor, backoff, dead-letter, fake with fail-before/after, log scopes, worker Dockerfile, compose worker.
+- [ ] **6. Remaining tests.** Tests 1, 2, 4 and 6.
+- [ ] **7. README.**
 
 ---
 
@@ -379,7 +375,7 @@ Tie answers to experience: integration job lifecycles at Snoonu; RabbitMQ retrie
 ## 15. Verification
 
 1. `dotnet build` — clean with warnings as errors.
-2. `dotnet test` with Docker running — tests 1, 2, 3, 5 green (4 and 6 if built). Run test 1 a few times in a row to confirm it is stable.
+2. `dotnet test` with Docker running — tests 1–6 green. Run test 1 a few times in a row to confirm it is stable.
 3. `docker compose up --build --scale worker=3` — migrate exits 0; api and three workers start.
 4. Run `requests.http` (or the curl examples): 201 with ETag `"1"` → PATCH with a stale ETag gives 412 → add two lines (status InProgress) → edit one, delete the other (total recalculates, ETag changes each time) → complete → DELETE line now gives 409 → GET until export status is Succeeded and job status is Exported.
 5. Create ~50 jobs with a script, kill one worker container mid-run (`docker kill <worker container>`), then check in psql: `SELECT job_id, count(*) FROM fake_accounting.invoices GROUP BY job_id HAVING count(*) > 1` returns no rows, and the invoice count equals the number of completed jobs.
