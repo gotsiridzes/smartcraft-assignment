@@ -1,0 +1,19 @@
+<Solution>
+  <Folder Name="/Solution Items/">
+    <File Path=".dockerignore" />
+    <File Path="Directory.Build.props" />
+    <File Path="Directory.Packages.props" />
+    <File Path="docker-compose.yml" />
+    <File Path="global.json" />
+    <File Path="README.md" />
+    <File Path="requests.http" />
+  </Folder>
+  <Folder Name="/src/">
+    <Project Path="src/Jobs.Api/Jobs.Api.csproj" />
+    <Project Path="src/Jobs.Core/Jobs.Core.csproj" />
+    <Project Path="src/Jobs.Worker/Jobs.Worker.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Jobs.Tests/Jobs.Tests.csproj" />
+  </Folder>
+</Solution>
