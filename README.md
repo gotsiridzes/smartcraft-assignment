@@ -1,2 +1,171 @@
-# smartcraft-assignment
-Technical Assignment, .NET Backend Service
+# Craft Jobs Service
+
+A small .NET 10 + PostgreSQL service that turns finished field work into **exactly one invoice** in the customer's accounting system, even with many API and worker instances running at once.
+
+The office creates a **job** and workers add, correct or remove **lines** (labour and materials). Someone then **completes** the job, which freezes it, and a background worker **exports** the invoice. The worker retries while accounting is down and records the result.
+
+```
+Draft ──first line──▶ InProgress ──complete──▶ Completed ──export──▶ Exported
+                                                         └─retries spent─▶ ExportFailed
+```
+
+## 1. How to run
+
+Prerequisites: .NET 10 SDK and Docker.
+
+```bash
+docker compose up --build --scale worker=3
+```
+
+This starts PostgreSQL, runs the one-shot `migrate` service, then starts the API on port 8080 and three workers.
+
+| What | Where |
+| --- | --- |
+| Swagger UI | http://localhost:8080/swagger |
+| OpenAPI document | http://localhost:8080/openapi/v1.json |
+| Health | http://localhost:8080/health |
+| Full demo flow | [requests.http](requests.http) (Visual Studio, Rider, VS Code REST Client) |
+
+The ETag is the job version. It starts at `"1"` and goes up by one with every change.
+
+```bash
+# Create (retrying with the same Idempotency-Key replays the first response)
+curl -i -X POST localhost:8080/jobs -H 'Content-Type: application/json' -H 'Idempotency-Key: demo-1' \
+  -d '{"customerName":"Fjord Elektro AS","siteAddress":"Storgata 1, 0155 Oslo","description":"Rewire kitchen"}'
+
+# Read: note the ETag header
+curl -i localhost:8080/jobs/<id>
+
+# Add a line with the current ETag (the job moves to InProgress, ETag becomes "2")
+curl -i -X POST localhost:8080/jobs/<id>/lines -H 'Content-Type: application/json' -H 'If-Match: "1"' \
+  -d '{"type":"Labour","description":"Electrician hours","quantity":2.5,"unitPrice":650}'
+
+# Complete (freezes the job and queues the export)
+curl -i -X POST localhost:8080/jobs/<id>/complete -H 'If-Match: "2"'
+
+# Watch the export: status Completed -> Exported, export.status Pending -> Succeeded
+curl -s localhost:8080/jobs/<id>
+```
+
+Check that no job was invoiced twice:
+
+```bash
+docker compose exec postgres psql -U craftjobs -d craftjobs -c "SELECT job_id, count(*) FROM fake_accounting.invoices GROUP BY job_id HAVING count(*) > 1;"
+```
+
+**Tests** (Docker must be running, because Testcontainers starts PostgreSQL):
+
+```bash
+dotnet test
+```
+
+**Running from the IDE:** start the database with `docker compose up -d postgres migrate`, then run `src/Jobs.Api` and `src/Jobs.Worker`. Their `appsettings.json` point at `localhost:5432`.
+
+## 2. How it works
+
+```
+            ┌──────────────┐  job + export task      ┌──────────────────────────┐
+ clients ──▶│ API (n)      │──── one transaction ───▶│ PostgreSQL               │
+            └──────────────┘                         │  jobs, job_lines         │
+            ┌──────────────┐  claim: SKIP LOCKED     │  export_tasks (queue)    │
+            │ Worker (n)   │◀───────────────────────▶│  idempotency_keys        │
+            └──────┬───────┘  fenced outcome writes  │  fake_accounting.invoices│
+                   │ idempotency key = task id       └──────────────────────────┘
+                   ▼
+            fake accounting (own connection, fails and lags on purpose)
+```
+
+| Endpoint | Guard | Success | Errors |
+| --- | --- | --- | --- |
+| `POST /jobs` | `Idempotency-Key` | 201 + ETag + Location | 400, 422 key reused with another body |
+| `GET /jobs/{id}` | | 200 + ETag (lines, total, export status) | 404 |
+| `GET /jobs?status=` | | 200, newest first, at most 50 | 400 |
+| `PATCH /jobs/{id}` | `If-Match` | 200 + new ETag | 400, 404, 409, 412, 428 |
+| `POST /jobs/{id}/lines` | `If-Match` | 200 + job + new ETag | 400, 404, 409, 412, 428 |
+| `PATCH /jobs/{id}/lines/{lineId}` | `If-Match` | 200 + job + new ETag | 400, 404, 409, 412, 428 |
+| `DELETE /jobs/{id}/lines/{lineId}` | `If-Match` | 200 + job + new ETag | 404, 409, 412, 428 |
+| `POST /jobs/{id}/complete` | `If-Match` | 200 + new ETag | 404, 409, 412, 428 |
+
+Errors are ProblemDetails with stable `type` values ([ProblemTypes](src/Jobs.Api/Http/Problems.cs)), so a client can tell a 409 state conflict from a 412 version conflict.
+
+**Worker loop** ([ExportProcessor](src/Jobs.Worker/ExportProcessor.cs), [TaskClaimer](src/Jobs.Worker/TaskClaimer.cs)):
+
+1. Claim up to N due tasks in one statement: `FOR UPDATE SKIP LOCKED`, new lease token, `attempts + 1`.
+2. Process the batch concurrently, so one lease covers one call.
+3. Call accounting with the task id as the idempotency key.
+4. Record the outcome with a write fenced by `id + lease_token + status = 'Processing'`:
+   - Success: the task becomes Succeeded and the job Exported, in one transaction.
+   - Transient failure: the task returns to Pending with exponential backoff and jitter.
+   - Permanent failure or attempt limit: the task becomes DeadLettered and the job ExportFailed.
+5. If the fenced write updates 0 rows, another worker took the task over. The worker logs it and moves on.
+
+## 3. Key decisions and trade-offs
+
+- **Domain.** A SmartCraft-style job-to-invoice flow, chosen because it makes concurrency and exactly-once matter.
+- **Explicit `Version` column instead of Postgres `xmin`.** It is explicit, portable, survives dump and restore, and doubles as the ETag. `xmin` would also work.
+- **ETag / If-Match instead of a version field in the body.** These are standard HTTP and keep concurrency control out of the resource. A missing header gives 428, a stale one 412, and a state conflict 409.
+- **The job is the aggregate root.** Adding, editing or deleting a line bumps `Job.Version`, because the total and the "needs a line to complete" rule span all lines. Two people editing different lines of the same job therefore conflict, by design.
+- **Database as the queue (`SKIP LOCKED`) instead of RabbitMQ.** `export_tasks` is written in the same transaction as the completion, so it is the outbox and the queue at once and no relay is needed. A broker would add a relay and consumer dedup without strengthening the guarantee.
+- **Lease + fencing token instead of a distributed lock.** A lock holder can pause past its expiry and still act. Here the database rejects the stale holder's write, with no extra infrastructure.
+- **Attempts are counted at claim time.** A task that crashes its worker every time still runs out of attempts and is dead-lettered instead of looping forever.
+- **Idempotency without an "in progress" state.** The key row is inserted in the job's transaction, so the primary key serialises concurrent duplicates. The loser replays the stored response.
+- **Replays are byte-identical.** The response body is stored as `text`, not `jsonb`, because `jsonb` reorders keys. The request hash is taken over the bound DTO, so whitespace and key order in a retry do not count as a different request.
+- **Separate API and worker deployables, plus a one-shot `migrate` step** (the API image run with `--migrate`). EF Core 9+ takes a migration lock, so migrating at startup would be workable. A separate step still fails fast, keeps DDL in one place, and allows a least-privilege app user later.
+- **One clock for the queue.** Claims, leases and retry times use the database's `now()`.
+- **No CQRS, MediatR or repositories.** The `DbContext` is used directly, and business rules live on the `Job` entity. At this size, extra layers add ceremony, not safety.
+- **Validation lives in the domain.** Request DTOs are nullable, and `Job` reports field errors as a 400 with per-field messages. Money is `decimal` in C# and `numeric(18,2)` in the database (`numeric(18,3)` for quantities). Inputs with more decimal places are rejected instead of silently rounded, and line totals round half away from zero.
+
+### Deduplication end to end
+
+| Where a duplicate comes from | How it is stopped | Enforced by |
+| --- | --- | --- |
+| Client retries `POST /jobs` | Idempotency key replays the first response | `idempotency_keys` primary key |
+| `complete` called twice or concurrently | Version check (412) or state machine (409); one task per job | Unique `export_tasks.job_id` |
+| Two workers hold the same task after lease expiry | Only the current token's write commits | `WHERE lease_token = @token` |
+| Worker crashes after the external call, before commit | Task id is the idempotency key; receiver returns the existing invoice | Unique `fake_accounting.invoices.idempotency_key` |
+
+Delivery to accounting is at-least-once, and the effect is exactly-once.
+
+## 4. Known limitations
+
+- Idempotency keys never expire, and they are global (no tenant scope).
+- No authentication or multi-tenancy. Single currency.
+- The fake accounting system shares the database (own schema, own connection).
+- The lease length is fixed. A call slower than the lease can be taken over; fencing keeps that correct, but the work is repeated.
+- Polling adds up to 1 s latency and constant light database load.
+- The exactly-once effect relies on the receiver honouring idempotency keys.
+- A newly completed job's first attempt time comes from the API's clock; everything after that uses the database clock.
+- ExportFailed needs manual action, because there is no replay endpoint yet.
+- Lines are hard-deleted, with no history.
+- Two people editing different lines of one job conflict (412) even though their changes do not overlap.
+- Compose runs one API instance (fixed host port). The API is stateless and scales the same way the workers do.
+
+## 5. How AI was used and verified
+
+AI (Claude) was used to review the plan, to scaffold the solution, and to write most of the code. Every claim it made had to be backed by a test or by the library documentation. The running log is in [docs/ai-log.md](docs/ai-log.md). Highlights:
+
+- **The plan review caught real defects.** These were the EF Core Guid key tracking pitfall (it would have turned every add-line into a false 412), attempts not counted for crashed workers, a flaky test design (20 % failures with 5 attempts across 200 tasks fails about 6 % of runs), and a dedup assertion that the unique constraint made tautological.
+- **The claim SQL and fencing are verified by tests, not by reading.** Test 1 (`ExportTests.Every_completed_job_is_invoiced_exactly_once_under_contention`) runs 4 competing workers against a fake that fails before and after writing the invoice, with latency longer than the lease. It asserts exactly one invoice per job and that the replay path actually ran. Test 2 covers the stale lease directly.
+- **Things AI got wrong or had to change** are listed in the log, including a `JsonOptions` name clash and the `jsonb` replay problem.
+
+## 6. Next steps (in priority order)
+
+1. Lease heartbeat for long external calls.
+2. Outbox relay to RabbitMQ, with an inbox table on consumers.
+3. Auth (JWT) and multi-tenancy, with a tenant id on every row.
+4. OpenTelemetry: queue depth, export lag, dead-letter count, and traces across API and worker.
+5. A dead-letter replay endpoint and an alert on ExportFailed.
+6. TTL cleanup for idempotency keys.
+7. `LISTEN/NOTIFY` to replace polling.
+8. CI (GitHub Actions) and Azure deployment with Managed Identity and Key Vault.
+9. Keyset paging, line change history or soft delete, rate limiting, and `If-None-Match`/304.
+
+## Project layout
+
+```
+src/Jobs.Core     Domain (Job aggregate, state machine), EF Core model, migrations
+src/Jobs.Api      Minimal API endpoints, ETag / Idempotency-Key handling, ProblemDetails
+src/Jobs.Worker   Export loop, task claimer (SKIP LOCKED + fencing), fake accounting
+tests/Jobs.Tests  Domain unit tests; Testcontainers integration tests for API and worker
+docs/             Implementation plans and the AI usage log
+```
