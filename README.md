@@ -32,7 +32,7 @@ It guards against three things: lost updates (ETag / If-Match), duplicate jobs f
 
 - [.NET 10 SDK](https://dotnet.microsoft.com/download) (10.0.100 or later; see `global.json`)
 - Docker (Docker Desktop on Windows/macOS), needed for compose and for the integration tests
-- Port 8080 (API) and port 5432 (PostgreSQL) free on the host
+- Port 8080 free on the host (API). Compose publishes its own PostgreSQL on host port **5433**, so a locally installed PostgreSQL on 5432 is not affected
 
 ### Run everything in Docker
 
@@ -40,7 +40,7 @@ It guards against three things: lost updates (ETag / If-Match), duplicate jobs f
 docker compose up --build --scale worker=3
 ```
 
-This starts PostgreSQL and runs the one-shot `migrate` service, an EF Core migrations bundle that applies the schema and exits. Then it starts the API on port 8080 and three workers. Stop everything with `docker compose down`; add `-v` to also delete the database volume.
+This starts its own PostgreSQL container and runs the one-shot `migrate` service, an EF Core migrations bundle that applies the schema and exits. Then it starts the API on port 8080 and three workers. The containers talk to the database as `Host=postgres`, and the data lives in the `pgdata` volume, separate from any PostgreSQL on your machine. To inspect it from the host, connect to `localhost:5433` (user, password and database `craftjobs`). Stop everything with `docker compose down`; add `-v` to also delete the database volume.
 
 ### Examples
 
@@ -52,7 +52,13 @@ This starts PostgreSQL and runs the one-shot `migrate` service, an EF Core migra
 | Full demo flow | [requests.http](requests.http) (Visual Studio, Rider, VS Code REST Client) |
 | Postman collection | [postman/CraftJobs.postman_collection.json](postman/CraftJobs.postman_collection.json): happy path and error contract, with assertions; runs in the Collection Runner |
 
-The ETag is the job version. It starts at `"1"` and goes up by one with every change.
+The ETag is the job version. It starts at `"1"` and goes up by one with every change. Clients never track versions themselves:
+
+1. Read the ETag from any response (`GET`, or the previous write).
+2. Send it back as `If-Match`.
+3. On 412, the response carries the current ETag and `currentVersion`, so the client knows how far behind it is, re-fetches or merges, and retries.
+
+Job bodies also include `version`, so a client working from `GET /jobs` can write without fetching each job first.
 
 ```bash
 # Create (retrying with the same Idempotency-Key replays the first response)
@@ -191,7 +197,8 @@ Errors are ProblemDetails with stable `type` values ([ProblemTypes](src/Jobs.Api
 
 - **Domain.** A SmartCraft-style job-to-invoice flow, chosen because it makes concurrency and exactly-once matter.
 - **Explicit `Version` column instead of Postgres `xmin`.** It is explicit, portable, survives dump and restore, and doubles as the ETag. `xmin` would also work.
-- **ETag / If-Match instead of a version field in the body.** These are standard HTTP and keep concurrency control out of the resource. A missing header gives 428, a stale one 412, and a state conflict 409.
+- **ETag / If-Match carries the version, not a field in the request body.** These are standard HTTP and keep concurrency control out of the request. A missing header gives 428, a stale one 412 (with the current ETag and `currentVersion`), and a state conflict 409. Responses also carry a read-only `version`, because a list response can't put one ETag per item in its headers.
+- **Version protection is enforced in the database, not only at the HTTP edge.** Every write to a job is an `UPDATE … WHERE version = @original` through EF Core, whether it comes from an API instance or from the worker (`MarkExported`). Two writers racing after the same read therefore can't both win. Export tasks use the lease token the same way.
 - **The job is the aggregate root.** Adding, editing or deleting a line bumps `Job.Version`, because the total and the "needs a line to complete" rule span all lines. Two people editing different lines of the same job therefore conflict, by design.
 - **Database as the queue (`SKIP LOCKED`) instead of RabbitMQ.** `export_tasks` is written in the same transaction as the completion, so it is the outbox and the queue at once and no relay is needed. A broker would add a relay and consumer dedup without strengthening the guarantee.
 - **Lease + fencing token instead of a distributed lock.** A lock holder can pause past its expiry and still act. Here the database rejects the stale holder's write, with no extra infrastructure.

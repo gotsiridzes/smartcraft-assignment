@@ -28,6 +28,10 @@ public sealed class ConcurrencyTests(PostgresFixture postgres) : IAsyncLifetime
         var loser = responses.Single(r => r.StatusCode == HttpStatusCode.PreconditionFailed);
         (await JobsApi.ProblemTypeOf(loser)).ShouldBe(ProblemTypes.VersionMismatch);
 
+        // Whichever path rejected it (stale read or failed UPDATE), the loser learns the current version.
+        JobsApi.ETagOf(loser).ShouldBe("\"2\"");
+        (await JobsApi.ReadJsonAsync(loser)).GetProperty("currentVersion").GetInt32().ShouldBe(2);
+
         var winner = responses.Single(r => r.StatusCode == HttpStatusCode.OK);
         var winnerName = (await JobsApi.ReadJsonAsync(winner)).GetProperty("customerName").GetString();
 
@@ -48,10 +52,34 @@ public sealed class ConcurrencyTests(PostgresFixture postgres) : IAsyncLifetime
 
         using var second = await JobsApi.SendAsync(client, HttpMethod.Patch, $"/jobs/{jobId}", staleEtag, new { description = "Second edit" });
         second.StatusCode.ShouldBe(HttpStatusCode.PreconditionFailed);
+        JobsApi.ETagOf(second).ShouldBe("\"2\"");
+        (await JobsApi.ReadJsonAsync(second)).GetProperty("currentVersion").GetInt32().ShouldBe(2);
 
         using var current = await client.GetAsync($"/jobs/{jobId}");
         JobsApi.ETagOf(current).ShouldBe("\"2\"");
         (await JobsApi.ReadJsonAsync(current)).GetProperty("description").GetString().ShouldBe("First edit");
+    }
+
+    [Fact]
+    public async Task The_body_version_matches_the_etag_and_lists_carry_versions()
+    {
+        var client = postgres.CreateApiClient();
+        var (jobId, etag) = await JobsApi.CreateJobAsync(client);
+        using var edited = await JobsApi.SendAsync(client, HttpMethod.Patch, $"/jobs/{jobId}", etag, new { description = "Edited" });
+
+        using var single = await client.GetAsync($"/jobs/{jobId}");
+        var version = (await JobsApi.ReadJsonAsync(single)).GetProperty("version").GetInt32();
+        version.ShouldBe(2);
+        JobsApi.ETagOf(single).ShouldBe($"\"{version}\"");
+
+        // A client editing from the list can send If-Match straight from the list item.
+        using var list = await client.GetAsync("/jobs");
+        var item = (await JobsApi.ReadJsonAsync(list)).EnumerateArray().Single(j => j.GetProperty("id").GetGuid() == jobId);
+        var listVersion = item.GetProperty("version").GetInt32();
+        listVersion.ShouldBe(2);
+
+        using var fromList = await JobsApi.SendAsync(client, HttpMethod.Patch, $"/jobs/{jobId}", $"\"{listVersion}\"", new { description = "Edited from the list" });
+        fromList.StatusCode.ShouldBe(HttpStatusCode.OK);
     }
 
     [Fact]

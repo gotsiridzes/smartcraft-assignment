@@ -46,11 +46,18 @@ internal static class Problems
         detail: $"Job '{id}' does not exist.",
         statusCode: StatusCodes.Status404NotFound);
 
-    public static IResult VersionMismatch() => Results.Problem(
+    /// <summary>
+    /// 412 with the job's current version (as <c>currentVersion</c> and in the ETag header, set by the
+    /// caller), so the client knows what it is behind and can re-fetch or merge before retrying.
+    /// </summary>
+    public static IResult VersionMismatch(int? currentVersion) => Results.Problem(
         type: ProblemTypes.VersionMismatch,
         title: "The job was changed by someone else.",
-        detail: "Your If-Match version is stale. Fetch the job again and retry with the new ETag.",
-        statusCode: StatusCodes.Status412PreconditionFailed);
+        detail: currentVersion is null
+            ? "Your If-Match version is stale. Fetch the job again and retry with the new ETag."
+            : $"Your If-Match version is stale; the job is now at version {currentVersion}. Fetch it again and retry with the new ETag.",
+        statusCode: StatusCodes.Status412PreconditionFailed,
+        extensions: currentVersion is null ? null : new Dictionary<string, object?> { ["currentVersion"] = currentVersion });
 
     public static IResult IdempotencyKeyReused() => Results.Problem(
         type: ProblemTypes.IdempotencyKeyReused,

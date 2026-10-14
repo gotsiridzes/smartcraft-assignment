@@ -117,7 +117,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test('200 OK', () => pm.response.to.have.status(200));",
-                  "pm.test('ETag is the current version', () => pm.expect(pm.response.headers.get('ETag')).to.eql(pm.collectionVariables.get('etag')));"
+                  "pm.test('ETag is the current version', () => pm.expect(pm.response.headers.get('ETag')).to.eql(pm.collectionVariables.get('etag')));",
+                  "pm.test('Body version matches the ETag', () => pm.expect('\"' + pm.response.json().version + '\"').to.eql(pm.response.headers.get('ETag')));"
                 ]
               }
             }
@@ -206,7 +207,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test('412 Precondition Failed', () => pm.response.to.have.status(412));",
-                  "pm.test('Problem type is version-mismatch', () => pm.expect(pm.response.json().type).to.match(/version-mismatch$/));"
+                  "pm.test('Problem type is version-mismatch', () => pm.expect(pm.response.json().type).to.match(/version-mismatch$/));",
+                  "pm.test('412 carries the current version', () => { pm.expect(pm.response.headers.get('ETag')).to.eql(pm.collectionVariables.get('etag')); pm.expect('\"' + pm.response.json().currentVersion + '\"').to.eql(pm.collectionVariables.get('etag')); });"
                 ]
               }
             }
@@ -477,7 +479,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test('200 OK', () => pm.response.to.have.status(200));",
-                  "pm.test('The job is listed', () => pm.expect(pm.response.json().map(j => j.id)).to.include(pm.collectionVariables.get('jobId')));"
+                  "pm.test('The job is listed', () => pm.expect(pm.response.json().map(j => j.id)).to.include(pm.collectionVariables.get('jobId')));",
+                  "pm.test('List items carry their version', () => pm.response.json().forEach(j => pm.expect(j.version).to.be.a('number')));"
                 ]
               }
             }

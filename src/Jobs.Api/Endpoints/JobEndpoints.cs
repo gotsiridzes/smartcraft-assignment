@@ -254,7 +254,7 @@ public static class JobEndpoints
         // a misleading answer (for example a 404 for a line someone else deleted).
         if (job.Version != expectedVersion)
         {
-            return Problems.VersionMismatch();
+            return VersionConflict(http, job.Version);
         }
 
         change(job);
@@ -265,7 +265,8 @@ public static class JobEndpoints
         }
         catch (DbUpdateConcurrencyException)
         {
-            return Problems.VersionMismatch();
+            // Another writer committed between our read and our UPDATE.
+            return VersionConflict(http, await CurrentVersionAsync(db, id));
         }
         catch (DbUpdateException exception) when (exception.InnerException is PostgresException
         {
@@ -274,11 +275,28 @@ public static class JobEndpoints
         })
         {
             // A concurrent complete won the race; the database's one-export-per-job rule caught it.
-            return Problems.VersionMismatch();
+            return VersionConflict(http, await CurrentVersionAsync(db, id));
         }
 
         return JobOk(http, job);
     }
+
+    /// <summary>412 carrying the current ETag, so the client sees what it is behind without another round trip.</summary>
+    private static IResult VersionConflict(HttpContext http, int? currentVersion)
+    {
+        if (currentVersion is not null)
+        {
+            http.Response.Headers.ETag = ETags.Format(currentVersion.Value);
+        }
+
+        return Problems.VersionMismatch(currentVersion);
+    }
+
+    private static Task<int?> CurrentVersionAsync(JobsDbContext db, Guid id)
+        => db.Jobs.AsNoTracking()
+            .Where(j => j.Id == id)
+            .Select(j => (int?)j.Version)
+            .SingleOrDefaultAsync(CancellationToken.None);
 
     private static IResult JobOk(HttpContext http, Job job)
     {

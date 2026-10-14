@@ -13,12 +13,17 @@ public sealed record AddLineRequest(LineType? Type, string? Description, decimal
 
 public sealed record UpdateLineRequest(LineType? Type, string? Description, decimal? Quantity, decimal? UnitPrice);
 
+/// <param name="Version">
+/// Same value as the ETag. The ETag header is authoritative for a single job; this field lets clients
+/// working from a list (or an offline copy) send If-Match without fetching each job first.
+/// </param>
 public sealed record JobResponse(
     Guid Id,
     string CustomerName,
     string SiteAddress,
     string Description,
     JobStatus Status,
+    int Version,
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt,
     DateTimeOffset? CompletedAt,
@@ -32,6 +37,7 @@ public sealed record JobResponse(
         job.SiteAddress,
         job.Description,
         job.Status,
+        job.Version,
         job.CreatedAt,
         job.UpdatedAt,
         job.CompletedAt,
