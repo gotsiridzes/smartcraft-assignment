@@ -2,7 +2,7 @@
 
 Oct 14, 2026 · @Saba · supersedes v1 (`Craft Jobs Service — Implementation Plan.md`)
 
-> **Status (Oct 14, 2026):** every build-order step is implemented. `dotnet build` is clean in Debug and Release (0 warnings, 0 errors) and no packages are vulnerable. The tests are written but have not been run yet. Implementation differs from this plan in a few places; see `README.md` and `docs/ai-log.md` (text instead of jsonb for stored responses, validation kept in the domain, plain SQL for claim and retry, Testcontainers 4.16).
+> **Status (Oct 14, 2026):** every build-order step is implemented. `dotnet build` is clean in Debug and Release (0 warnings, 0 errors) and no packages are vulnerable. The tests are written but have not been run yet. Implementation differs from this plan in a few places; see `README.md` and `docs/ai-log.md` (text instead of jsonb for stored responses, validation kept in the domain, plain SQL for claim and retry, Testcontainers 4.16, migrations bundle instead of a `--migrate` flag).
 
 ## 1. Review of v1: what changes and why
 
@@ -34,7 +34,7 @@ The v1 design holds: one invariant (exactly one invoice per completed job), DB-a
 16. FluentAssertions v8+ needs a commercial licence → **Shouldly** (MIT).
 17. .NET 9+ templates dropped Swashbuckle → `Microsoft.AspNetCore.OpenApi` (`/openapi/v1.json`) + `Swashbuckle.AspNetCore.SwaggerUI` at `/swagger`. Bind headers with `[FromHeader]` so `If-Match` and `Idempotency-Key` show up in OpenAPI.
 18. .NET 10 built-in minimal API validation (`AddValidation()` + DataAnnotations) instead of hand-rolled checks.
-19. **Migrations via a `--migrate` flag on the API image**, not an EF bundle: no dotnet-ef or RID in the Dockerfile. Updated rationale: EF Core 9+ takes a migration lock, so "races" is no longer the main argument; a separate step still fails fast, keeps DDL in one place, and allows a least-privilege app user later.
+19. **Migrations outside the app** *(revised during implementation)*: `dotnet ef database update` locally, an EF Core migrations bundle (`src/Jobs.Core/Migrations.Dockerfile`) as the compose / deployment step. There is no migrate flag and no startup migration, not even in production. EF Core 9+ takes a migration lock, so "races" is no longer the main argument; a separate step still fails fast, keeps DDL in one place, can be reviewed as an idempotent script, and allows a least-privilege app user.
 20. Fenced complete/fail use EF `ExecuteUpdateAsync` (type-safe). Raw SQL only for the claim (`FOR UPDATE SKIP LOCKED`).
 21. `postgres:17-alpine` in compose and Testcontainers (the 18 image changed its volume layout; avoid the surprise).
 22. Console logging with `IncludeScopes = true`, otherwise TaskId/JobId scopes are invisible.
@@ -85,7 +85,7 @@ Flow: office creates a **job** → workers add, correct or remove **lines** (lab
 | Queue | `export_tasks` claimed with `FOR UPDATE SKIP LOCKED` | RabbitMQ |
 | Worker coordination | Lease + lease token (compare-and-set) | Redis lock |
 | Ids | `Guid.CreateVersion7()` in the domain, `ValueGeneratedNever()` | DB-generated |
-| Migrations | One-shot `migrate` service (API image, `--migrate`) | Migrate at startup (EF 9+ lock makes it workable) |
+| Migrations | `dotnet ef database update` locally; migrations bundle as a one-shot `migrate` step | Migrate at startup (EF 9+ lock makes it workable; still not recommended for production) |
 | Assertions | Shouldly | FluentAssertions (commercial licence from v8) |
 
 ---
@@ -116,7 +116,7 @@ src/Jobs.Core
                    FakeAccounting/FakeInvoice (schema fake_accounting, simulation only)
   DependencyInjection.cs   AddJobsPersistence(connectionString)
 src/Jobs.Api
-  Program.cs       --migrate mode, OpenAPI + Swagger UI, ProblemDetails, /health
+  Program.cs       OpenAPI + Swagger UI, ProblemDetails, /health (no migration code)
   Endpoints/JobEndpoints.cs
   Contracts/       request / response records
   Http/            ETags (format/parse via EntityTagHeaderValue), Idempotency, ProblemTypes,
@@ -319,7 +319,7 @@ Cite test 1 in the README's AI section as the verification of AI-written worker 
 ## 11. Docker compose
 
 - `postgres`: `postgres:17-alpine`, `pg_isready` healthcheck, named volume.
-- `migrate`: API image, `command: ["--migrate"]`, depends on postgres healthy, `restart: "no"`.
+- `migrate`: migrations bundle image (`src/Jobs.Core/Migrations.Dockerfile`), `command: ["--connection", ...]`, depends on postgres healthy, `restart: "no"`.
 - `api`: API image, `8080:8080`, depends on migrate `service_completed_successfully`.
 - `worker`: worker image, same dependency, fake accounting env (`FakeAccounting__FailBeforeRate=0.1`, `FailAfterRate=0.05`, latency 100–800 ms), run with `--scale worker=3`.
 - Dev credentials inline in compose (`.gitignore` excludes `*.env`), passed as `ConnectionStrings__Jobs`.
@@ -331,7 +331,7 @@ Cite test 1 in the README's AI section as the verification of AI-written worker 
 
 - [x] **0. Setup.** `global.json`, `Directory.Build.props`, `Directory.Packages.props`, `.slnx`, four projects, compose with postgres only, README skeleton, `docs/ai-log.md`.
 - [x] **1. Domain + persistence + test 5.** Entities, state machine including `UpdateLine` / `RemoveLine`, EF configs (naming convention, `ValueGeneratedNever`, concurrency token, unique indexes, check constraints, precision), `InitialCreate` migration (`dotnet ef migrations add InitialCreate -p src/Jobs.Core -s src/Jobs.Api -o Persistence/Migrations`), domain unit tests. *(migration generated with `dotnet ef`, pinned as a local tool; `has-pending-model-changes` clean)*
-- [x] **2. API.** All eight endpoints (line PATCH/DELETE share the write handler pattern), ETag helpers, ProblemDetails and exception handler, validation, OpenAPI + Swagger UI, `/health`, `--migrate` mode, API Dockerfile, compose `migrate` + `api`, `requests.http`.
+- [x] **2. API.** All eight endpoints (line PATCH/DELETE share the write handler pattern), ETag helpers, ProblemDetails and exception handler, validation, OpenAPI + Swagger UI, `/health`, API Dockerfile, migrations bundle Dockerfile, compose `migrate` + `api`, `requests.http`.
 - [x] **3. Idempotency.** Key row in the same transaction, replay with headers, 422.
 - [x] **4. Test infrastructure + test 3.** Postgres fixture, API factory, lost-update test. *(written; not run yet)*
 - [x] **5. Worker + fake accounting.** Options, claimer, processor, backoff, dead-letter, fake with fail-before/after, log scopes, worker Dockerfile, compose worker.
@@ -367,7 +367,7 @@ Cite test 1 in the README's AI section as the verification of AI-written worker 
 | Why not RabbitMQ? | The task table already is the outbox and queue; a broker adds a relay and consumer dedup without strengthening the guarantee |
 | How does it scale? | SKIP LOCKED handles many workers; at volume move to a broker, partition by tenant, replace polling with LISTEN/NOTIFY |
 | `Version` vs `xmin`? | Explicit, portable, survives dump/restore; `xmin` works too |
-| Why a separate migrate step if EF 9+ locks? | Fail fast before app start, DDL in one place, allows a least-privilege app user |
+| Why a separate migrate step if EF 9+ locks? | Fail fast before app start, DDL in one place, SQL can be reviewed, the app runs as a least-privilege user, and a failed migration does not leave instances crash-looping |
 | Another day? | Lease heartbeat and observability first |
 
 Tie answers to experience: integration job lifecycles at Snoonu; RabbitMQ retries, idempotency and DLQ at Alta; Managed Identity and CI/CD at Leneo.
@@ -378,7 +378,7 @@ Tie answers to experience: integration job lifecycles at Snoonu; RabbitMQ retrie
 
 1. `dotnet build` — clean with warnings as errors.
 2. `dotnet test` with Docker running — tests 1–6 green. Run test 1 a few times in a row to confirm it is stable.
-3. `docker compose up --build --scale worker=3` — migrate exits 0; api and three workers start.
+3. `docker compose up --build --scale worker=3` — the migrations bundle exits 0; api and three workers start.
 4. Run `requests.http` (or the curl examples): 201 with ETag `"1"` → PATCH with a stale ETag gives 412 → add two lines (status InProgress) → edit one, delete the other (total recalculates, ETag changes each time) → complete → DELETE line now gives 409 → GET until export status is Succeeded and job status is Exported.
 5. Create ~50 jobs with a script, kill one worker container mid-run (`docker kill <worker container>`), then check in psql: `SELECT job_id, count(*) FROM fake_accounting.invoices GROUP BY job_id HAVING count(*) > 1` returns no rows, and the invoice count equals the number of completed jobs.
 6. Worker logs show JSON lines carrying `TaskId`, `JobId`, `WorkerId`, `Attempt` scopes.

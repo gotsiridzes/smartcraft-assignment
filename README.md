@@ -92,20 +92,13 @@ dotnet test
 
 ### Run against your own PostgreSQL
 
-Both `appsettings.json` files, and the EF design-time factory, default to `Host=localhost;Port=5432;Database=craftjobs;Username=craftjobs;Password=craftjobs`. Create a matching user once, as a superuser:
+The API, the worker and `dotnet ef` all read the connection string `ConnectionStrings:Jobs` from the same configuration. The default in `appsettings.json` is `Host=localhost;Port=5432;Database=craftjobs;Username=craftjobs;Password=craftjobs`. Put your own connection string in **user secrets**: the API and the worker share one secrets store, it lives outside the repository, and it is loaded in Development.
 
-```sql
-CREATE USER craftjobs WITH PASSWORD 'craftjobs' CREATEDB;
-CREATE DATABASE craftjobs OWNER craftjobs;
+```bash
+dotnet user-secrets set "ConnectionStrings:Jobs" "Host=localhost;Port=5432;Database=craftjobs;Username=<user>;Password=<password>" --project src/Jobs.Api
 ```
 
-To use other credentials, set `ConnectionStrings__Jobs` in each terminal instead. All the commands below honour it.
-
-```powershell
-$env:ConnectionStrings__Jobs = "Host=localhost;Port=5432;Database=craftjobs;Username=<user>;Password=<password>"
-```
-
-Apply the schema with the EF Core tools, then start the API and as many workers as you like, each in its own terminal:
+Apply the schema with the EF Core tools. `dotnet ef` uses the API's configuration, including user secrets; `--connection` overrides it for a single run. Then start the API and as many workers as you like, each in its own terminal:
 
 ```bash
 dotnet tool restore
@@ -113,6 +106,10 @@ dotnet tool restore
 
 ```bash
 dotnet ef database update --project src/Jobs.Core --startup-project src/Jobs.Api
+```
+
+```bash
+dotnet ef database update --project src/Jobs.Core --startup-project src/Jobs.Api --connection "Host=localhost;Port=5432;Database=craftjobs;Username=<user>;Password=<password>"
 ```
 
 ```bash
@@ -132,7 +129,7 @@ The application never changes the schema: there is no migrate-at-startup and no 
 | Where | How |
 | --- | --- |
 | Local development | `dotnet ef database update` (above), with `dotnet-ef` pinned in `dotnet-tools.json` to the EF Core version |
-| Compose, CI, production | An EF Core **migrations bundle** ([Migrations.Dockerfile](src/Jobs.Core/Migrations.Dockerfile)): a self-contained executable run once before the app starts, with `--connection` |
+| Compose, CI, production | An EF Core **migrations bundle** ([Migrations.Dockerfile](src/Jobs.Core/Migrations.Dockerfile)): a standalone executable run once before the app starts, with `--connection` |
 | Integration tests | The Testcontainers fixture calls `MigrateAsync()` on its throwaway database |
 
 After changing the model, add a migration and check that the model and migrations agree:

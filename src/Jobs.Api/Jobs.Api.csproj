@@ -3,6 +3,8 @@
   <PropertyGroup>
     <!-- ASP0027: .NET 10 already makes Program public; the explicit declaration is kept for WebApplicationFactory<Program>. -->
     <NoWarn>$(NoWarn);ASP0027</NoWarn>
+    <!-- Shared with Jobs.Worker: one `dotnet user-secrets` store holds the local connection string for both. -->
+    <UserSecretsId>craft-jobs-f5484661-bfde-4b5e-b7cb-165b2110bf0f</UserSecretsId>
   </PropertyGroup>
 
   <ItemGroup>

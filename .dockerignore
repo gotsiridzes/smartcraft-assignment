@@ -8,3 +8,8 @@
 .git/
 docs/
 tests/
+
+# Local developer configuration never goes into images.
+**/appsettings.Development.json
+**/secrets.json
+**/.env

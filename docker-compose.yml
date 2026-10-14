@@ -27,7 +27,8 @@ services:
       context: .
       dockerfile: src/Jobs.Core/Migrations.Dockerfile
     image: craft-jobs-migrations
-    command: ["--connection", *connection-string]
+    environment:
+      ConnectionStrings__Jobs: *connection-string
     depends_on:
       postgres:
         condition: service_healthy
