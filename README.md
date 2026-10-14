@@ -1,23 +1,48 @@
 # Craft Jobs Service
 
-A small .NET 10 + PostgreSQL service that turns finished field work into **exactly one invoice** in the customer's accounting system, even with many API and worker instances running at once.
+A small .NET 10 + PostgreSQL service for trade companies (electricians, plumbers, carpenters). It turns finished field work into **exactly one invoice** in the customer's accounting system, even with many API and worker instances running at once.
 
-The office creates a **job** and workers add, correct or remove **lines** (labour and materials). Someone then **completes** the job, which freezes it, and a background worker **exports** the invoice. The worker retries while accounting is down and records the result.
+1. The office creates a **job**: customer, site address, description.
+2. Workers add, correct or remove **lines**: labour hours and materials, each quantity × unit price.
+3. Someone **completes** the job. From then on it is frozen, because it is what gets invoiced.
+4. A background worker **exports** the invoice to the accounting system, retries while that system is down, and records the result.
 
 ```
 Draft ──first line──▶ InProgress ──complete──▶ Completed ──export──▶ Exported
                                                          └─retries spent─▶ ExportFailed
 ```
 
+It guards against three things: lost updates (ETag / If-Match), duplicate jobs from retried requests (Idempotency-Key), and duplicate invoices from competing or crashing workers (`SKIP LOCKED` queue, lease token fencing, and an idempotency key on the accounting call).
+
+## Status
+
+| Area | State |
+| --- | --- |
+| API (8 endpoints), domain, persistence | Done |
+| Background worker, fake accounting system | Done |
+| EF Core migration `InitialCreate` | Generated with `dotnet ef`; `has-pending-model-changes` reports none |
+| Build | Debug and Release: 0 warnings, 0 errors (warnings are errors, including NuGet audit) |
+| Vulnerable packages | None (`dotnet list package --vulnerable --include-transitive`) |
+| Tests (domain + Testcontainers integration) | Written, not run yet |
+| CI, auth, observability | Not started (see next steps) |
+
 ## 1. How to run
 
-Prerequisites: .NET 10 SDK and Docker.
+### Prerequisites
+
+- [.NET 10 SDK](https://dotnet.microsoft.com/download) (10.0.100 or later; see `global.json`)
+- Docker (Docker Desktop on Windows/macOS), needed for compose and for the integration tests
+- Port 8080 (API) and port 5432 (PostgreSQL) free on the host
+
+### Run everything in Docker
 
 ```bash
 docker compose up --build --scale worker=3
 ```
 
-This starts PostgreSQL, runs the one-shot `migrate` service, then starts the API on port 8080 and three workers.
+This starts PostgreSQL, runs the one-shot `migrate` service, then starts the API on port 8080 and three workers. Stop everything with `docker compose down`; add `-v` to also delete the database volume.
+
+### Examples
 
 | What | Where |
 | --- | --- |
@@ -53,13 +78,53 @@ Check that no job was invoiced twice:
 docker compose exec postgres psql -U craftjobs -d craftjobs -c "SELECT job_id, count(*) FROM fake_accounting.invoices GROUP BY job_id HAVING count(*) > 1;"
 ```
 
-**Tests** (Docker must be running, because Testcontainers starts PostgreSQL):
+### Build and test
+
+```bash
+dotnet build
+```
+
+The tests need Docker running, because Testcontainers starts a throwaway PostgreSQL:
 
 ```bash
 dotnet test
 ```
 
-**Running from the IDE:** start the database with `docker compose up -d postgres migrate`, then run `src/Jobs.Api` and `src/Jobs.Worker`. Their `appsettings.json` point at `localhost:5432`.
+### Run from the IDE or the command line
+
+Start only the database and apply migrations, then run the API and as many workers as you like. Both `appsettings.json` files point at `localhost:5432`.
+
+```bash
+docker compose up -d postgres migrate
+```
+
+```bash
+dotnet run --project src/Jobs.Api
+```
+
+```bash
+dotnet run --project src/Jobs.Worker
+```
+
+### Database migrations
+
+`dotnet-ef` is pinned in `dotnet-tools.json` to the same version as EF Core. Restore it once:
+
+```bash
+dotnet tool restore
+```
+
+After changing the model, add a migration and check that the model and migrations agree:
+
+```bash
+dotnet ef migrations add <Name> --project src/Jobs.Core --startup-project src/Jobs.Api --output-dir Persistence/Migrations
+```
+
+```bash
+dotnet ef migrations has-pending-model-changes --project src/Jobs.Core --startup-project src/Jobs.Api
+```
+
+Migrations are applied by the compose `migrate` service, which runs the API image with `--migrate`, or locally with `dotnet run --project src/Jobs.Api -- --migrate`. The API and workers never migrate at startup.
 
 ## 2. How it works
 
@@ -146,7 +211,11 @@ AI (Claude) was used to review the plan, to scaffold the solution, and to write 
 
 - **The plan review caught real defects.** These were the EF Core Guid key tracking pitfall (it would have turned every add-line into a false 412), attempts not counted for crashed workers, a flaky test design (20 % failures with 5 attempts across 200 tasks fails about 6 % of runs), and a dedup assertion that the unique constraint made tautological.
 - **The claim SQL and fencing are verified by tests, not by reading.** Test 1 (`ExportTests.Every_completed_job_is_invoiced_exactly_once_under_contention`) runs 4 competing workers against a fake that fails before and after writing the invoice, with latency longer than the lease. It asserts exactly one invoice per job and that the replay path actually ran. Test 2 covers the stale lease directly.
-- **Things AI got wrong or had to change** are listed in the log, including a `JsonOptions` name clash and the `jsonb` replay problem.
+- **Things AI got wrong or had to change** are listed in the log. They include:
+  - a `JsonOptions` name clash;
+  - the `jsonb` replay problem;
+  - a hand-written first migration, replaced by one generated with `dotnet ef`;
+  - a vulnerability exemption that hid a vulnerable SSH.NET pulled in by Testcontainers. Testcontainers was upgraded to 4.16 and the exemption removed.
 
 ## 6. Next steps (in priority order)
 

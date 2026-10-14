@@ -2,6 +2,8 @@
 
 Oct 14, 2026 · @Saba · supersedes v1 (`Craft Jobs Service — Implementation Plan.md`)
 
+> **Status (Oct 14, 2026):** every build-order step is implemented. `dotnet build` is clean in Debug and Release (0 warnings, 0 errors) and no packages are vulnerable. The tests are written but have not been run yet. Implementation differs from this plan in a few places; see `README.md` and `docs/ai-log.md` (text instead of jsonb for stored responses, validation kept in the domain, plain SQL for claim and retry, Testcontainers 4.16).
+
 ## 1. Review of v1: what changes and why
 
 The v1 design holds: one invariant (exactly one invoice per completed job), DB-as-queue with `SKIP LOCKED`, lease + fencing, ETag/If-Match, Idempotency-Key, separate API and worker. Changes below fix bugs, a flaky test, and a test that would not prove what it claims.
@@ -327,14 +329,14 @@ Cite test 1 in the README's AI section as the verification of AI-written worker 
 
 ## 12. Build order
 
-- [ ] **0. Setup.** `global.json`, `Directory.Build.props`, `Directory.Packages.props`, `.slnx`, four projects, compose with postgres only, README skeleton, `docs/ai-log.md`.
-- [ ] **1. Domain + persistence + test 5.** Entities, state machine including `UpdateLine` / `RemoveLine`, EF configs (naming convention, `ValueGeneratedNever`, concurrency token, unique indexes, check constraints, precision), `InitialCreate` migration (`dotnet ef migrations add InitialCreate -p src/Jobs.Core -s src/Jobs.Api -o Persistence/Migrations`), domain unit tests.
-- [ ] **2. API.** All eight endpoints (line PATCH/DELETE share the write handler pattern), ETag helpers, ProblemDetails and exception handler, validation, OpenAPI + Swagger UI, `/health`, `--migrate` mode, API Dockerfile, compose `migrate` + `api`, `requests.http`.
-- [ ] **3. Idempotency.** Key row in the same transaction, replay with headers, 422.
-- [ ] **4. Test infrastructure + test 3.** Postgres fixture, API factory, lost-update test.
-- [ ] **5. Worker + fake accounting.** Options, claimer, processor, backoff, dead-letter, fake with fail-before/after, log scopes, worker Dockerfile, compose worker.
-- [ ] **6. Remaining tests.** Tests 1, 2, 4 and 6.
-- [ ] **7. README.**
+- [x] **0. Setup.** `global.json`, `Directory.Build.props`, `Directory.Packages.props`, `.slnx`, four projects, compose with postgres only, README skeleton, `docs/ai-log.md`.
+- [x] **1. Domain + persistence + test 5.** Entities, state machine including `UpdateLine` / `RemoveLine`, EF configs (naming convention, `ValueGeneratedNever`, concurrency token, unique indexes, check constraints, precision), `InitialCreate` migration (`dotnet ef migrations add InitialCreate -p src/Jobs.Core -s src/Jobs.Api -o Persistence/Migrations`), domain unit tests. *(migration generated with `dotnet ef`, pinned as a local tool; `has-pending-model-changes` clean)*
+- [x] **2. API.** All eight endpoints (line PATCH/DELETE share the write handler pattern), ETag helpers, ProblemDetails and exception handler, validation, OpenAPI + Swagger UI, `/health`, `--migrate` mode, API Dockerfile, compose `migrate` + `api`, `requests.http`.
+- [x] **3. Idempotency.** Key row in the same transaction, replay with headers, 422.
+- [x] **4. Test infrastructure + test 3.** Postgres fixture, API factory, lost-update test. *(written; not run yet)*
+- [x] **5. Worker + fake accounting.** Options, claimer, processor, backoff, dead-letter, fake with fail-before/after, log scopes, worker Dockerfile, compose worker.
+- [x] **6. Remaining tests.** Tests 1, 2, 4 and 6. *(written; not run yet)*
+- [x] **7. README.**
 
 ---
 

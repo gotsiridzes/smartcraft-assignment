@@ -15,7 +15,7 @@ Each entry has four parts: what was asked, what came back, what was wrong or cha
 
 ## Implementation
 
-The code was written by the assistant without compiling or running it (my instruction). The first `dotnet build` and `dotnet test` are the verification for everything below.
+The assistant first wrote the code without compiling it (my instruction). After that, `dotnet build` was run in Debug and Release: 0 warnings and 0 errors, with warnings treated as errors. The tests are written but have not been run yet.
 
 | Area | What AI produced | Wrong / changed during writing | Verified by |
 | --- | --- | --- | --- |
@@ -26,4 +26,5 @@ The code was written by the assistant without compiling or running it (my instru
 | Endpoints | Shared write path: 428/400 → 404 → 412 → domain → save (`DbUpdateConcurrencyException` → 412) | First draft had an ambiguous `JsonOptions` (`Http.Json` vs `Mvc`); aliased. A concurrent complete can surface as a unique violation on `export_tasks.job_id` instead of a concurrency exception, so that also maps to 412 | Tests 3 and 6 |
 | Validation | Rules in the domain, field errors as 400 | The plan suggested .NET 10 `AddValidation()`. Kept the rules on `Job` instead, so there is one source of truth | Test 5; `HeaderContractTests.An_invalid_line_returns_400_with_field_errors` |
 | Claim result mapping | Plain `NpgsqlCommand` instead of `Database.SqlQuery<T>` | `SqlQuery<T>` for unmapped types interacts with the snake_case naming convention in ways I could not verify without running it | Tests 1 and 2 |
-| Initial migration | Hand-written migration, designer and model snapshot (no build allowed, so `dotnet ef` could not generate them) | Must match the model exactly, or EF reports pending model changes | `dotnet ef migrations has-pending-model-changes -p src/Jobs.Core -s src/Jobs.Api`; the test fixture applies the migration |
+| Initial migration | First attempt: a hand-written migration, designer and snapshot, because no build was allowed | Rejected: generated code must come from the tool. Deleted and regenerated with `dotnet ef migrations add InitialCreate`; `dotnet-ef` is pinned to 10.0.11 in `dotnet-tools.json` to match the EF runtime | `dotnet ef migrations has-pending-model-changes` reports no changes; the test fixture and the compose `migrate` service apply it |
+| Package vulnerabilities | Testcontainers 4.13.0, which pulls SSH.NET 2025.1.0 (GHSA-mggc-4xg6-vcxf, GHSA-q939-rpr3-3284). Testcontainers needs SSH.NET only to reach a Docker host over `ssh://`; this project never uses that | The AI had also added `WarningsNotAsErrors` for NU1901–NU1904, which turned the vulnerability into a warning instead of a failed build. Upgraded to Testcontainers 4.16.0 (SSH.NET 2026.0.0, the first patched version), removed the exemption, and set `NuGetAuditMode=all` | `dotnet list package --vulnerable --include-transitive`: none |
