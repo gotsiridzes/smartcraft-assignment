@@ -20,7 +20,7 @@ It guards against three things: lost updates (ETag / If-Match), duplicate jobs f
 | --- | --- |
 | API (8 endpoints), domain, persistence | Done |
 | Background worker, fake accounting system | Done |
-| EF Core migration `InitialCreate` | Generated with `dotnet ef`; `has-pending-model-changes` reports none |
+| EF Core migration `InitialCreate` | Generated with `dotnet ef`; `has-pending-model-changes` reports none. Applied outside the app (`dotnet ef database update` or a migrations bundle) |
 | Build | Debug and Release: 0 warnings, 0 errors (warnings are errors, including NuGet audit) |
 | Vulnerable packages | None (`dotnet list package --vulnerable --include-transitive`) |
 | Tests (domain + Testcontainers integration) | Written, not run yet |
@@ -40,7 +40,7 @@ It guards against three things: lost updates (ETag / If-Match), duplicate jobs f
 docker compose up --build --scale worker=3
 ```
 
-This starts PostgreSQL, runs the one-shot `migrate` service, then starts the API on port 8080 and three workers. Stop everything with `docker compose down`; add `-v` to also delete the database volume.
+This starts PostgreSQL and runs the one-shot `migrate` service, an EF Core migrations bundle that applies the schema and exits. Then it starts the API on port 8080 and three workers. Stop everything with `docker compose down`; add `-v` to also delete the database volume.
 
 ### Examples
 
@@ -90,12 +90,29 @@ The tests need Docker running, because Testcontainers starts a throwaway Postgre
 dotnet test
 ```
 
-### Run from the IDE or the command line
+### Run against your own PostgreSQL
 
-Start only the database and apply migrations, then run the API and as many workers as you like. Both `appsettings.json` files point at `localhost:5432`.
+Both `appsettings.json` files, and the EF design-time factory, default to `Host=localhost;Port=5432;Database=craftjobs;Username=craftjobs;Password=craftjobs`. Create a matching user once, as a superuser:
+
+```sql
+CREATE USER craftjobs WITH PASSWORD 'craftjobs' CREATEDB;
+CREATE DATABASE craftjobs OWNER craftjobs;
+```
+
+To use other credentials, set `ConnectionStrings__Jobs` in each terminal instead. All the commands below honour it.
+
+```powershell
+$env:ConnectionStrings__Jobs = "Host=localhost;Port=5432;Database=craftjobs;Username=<user>;Password=<password>"
+```
+
+Apply the schema with the EF Core tools, then start the API and as many workers as you like, each in its own terminal:
 
 ```bash
-docker compose up -d postgres migrate
+dotnet tool restore
+```
+
+```bash
+dotnet ef database update --project src/Jobs.Core --startup-project src/Jobs.Api
 ```
 
 ```bash
@@ -106,13 +123,17 @@ dotnet run --project src/Jobs.Api
 dotnet run --project src/Jobs.Worker
 ```
 
+For extra workers, use `dotnet run --project src/Jobs.Worker --no-build`, so they don't rebuild while the first worker holds the files.
+
 ### Database migrations
 
-`dotnet-ef` is pinned in `dotnet-tools.json` to the same version as EF Core. Restore it once:
+The application never changes the schema: there is no migrate-at-startup and no migrate flag. Migrations are applied as a separate step:
 
-```bash
-dotnet tool restore
-```
+| Where | How |
+| --- | --- |
+| Local development | `dotnet ef database update` (above), with `dotnet-ef` pinned in `dotnet-tools.json` to the EF Core version |
+| Compose, CI, production | An EF Core **migrations bundle** ([Migrations.Dockerfile](src/Jobs.Core/Migrations.Dockerfile)): a self-contained executable run once before the app starts, with `--connection` |
+| Integration tests | The Testcontainers fixture calls `MigrateAsync()` on its throwaway database |
 
 After changing the model, add a migration and check that the model and migrations agree:
 
@@ -124,7 +145,11 @@ dotnet ef migrations add <Name> --project src/Jobs.Core --startup-project src/Jo
 dotnet ef migrations has-pending-model-changes --project src/Jobs.Core --startup-project src/Jobs.Api
 ```
 
-Migrations are applied by the compose `migrate` service, which runs the API image with `--migrate`, or locally with `dotnet run --project src/Jobs.Api -- --migrate`. The API and workers never migrate at startup.
+To review the SQL before it runs, for example for a DBA or a release, generate an idempotent script:
+
+```bash
+dotnet ef migrations script --idempotent --project src/Jobs.Core --startup-project src/Jobs.Api --output migrate.sql
+```
 
 ## 2. How it works
 
@@ -175,7 +200,12 @@ Errors are ProblemDetails with stable `type` values ([ProblemTypes](src/Jobs.Api
 - **Attempts are counted at claim time.** A task that crashes its worker every time still runs out of attempts and is dead-lettered instead of looping forever.
 - **Idempotency without an "in progress" state.** The key row is inserted in the job's transaction, so the primary key serialises concurrent duplicates. The loser replays the stored response.
 - **Replays are byte-identical.** The response body is stored as `text`, not `jsonb`, because `jsonb` reorders keys. The request hash is taken over the bound DTO, so whitespace and key order in a retry do not count as a different request.
-- **Separate API and worker deployables, plus a one-shot `migrate` step** (the API image run with `--migrate`). EF Core 9+ takes a migration lock, so migrating at startup would be workable. A separate step still fails fast, keeps DDL in one place, and allows a least-privilege app user later.
+- **Separate API and worker deployables; migrations outside the app.** Schema changes run as their own step: `dotnet ef database update` locally, a migrations bundle in compose, CI and production. They never run at API startup, even in production. EF Core 9+ takes a migration lock, so concurrent instances no longer race, but startup migration still:
+  - needs DDL rights for the app's database user;
+  - couples a deploy to app start, so a failed migration leaves instances crash-looping;
+  - runs SQL nobody reviewed.
+
+  A separate step fails fast, can be reviewed (`migrations script --idempotent`), and lets the app run as a least-privilege user.
 - **One clock for the queue.** Claims, leases and retry times use the database's `now()`.
 - **No CQRS, MediatR or repositories.** The `DbContext` is used directly, and business rules live on the `Job` entity. At this size, extra layers add ceremony, not safety.
 - **Validation lives in the domain.** Request DTOs are nullable, and `Job` reports field errors as a 400 with per-field messages. Money is `decimal` in C# and `numeric(18,2)` in the database (`numeric(18,3)` for quantities). Inputs with more decimal places are rejected instead of silently rounded, and line totals round half away from zero.

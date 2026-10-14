@@ -2,13 +2,10 @@ using System.Text.Json.Serialization;
 using Jobs.Api.Endpoints;
 using Jobs.Api.Http;
 using Jobs.Core.Persistence;
-using Microsoft.EntityFrameworkCore;
 
-// "--migrate" turns this image into the one-shot migration step used by docker compose.
-const string MigrateFlag = "--migrate";
-var migrateOnly = args.Contains(MigrateFlag);
-
-var builder = WebApplication.CreateBuilder(args.Where(arg => arg != MigrateFlag).ToArray());
+// The API never changes the schema. Migrations run separately: `dotnet ef database update` locally,
+// or the EF Core migrations bundle (src/Jobs.Core/Migrations.Dockerfile) as a deployment step.
+var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddJobsPersistence(sp => sp.GetRequiredService<IConfiguration>().GetConnectionString("Jobs")
     ?? throw new InvalidOperationException("Connection string 'Jobs' is not configured."));
@@ -21,15 +18,6 @@ builder.Services.AddOpenApi();
 builder.Services.AddHealthChecks().AddDbContextCheck<JobsDbContext>();
 
 var app = builder.Build();
-
-if (migrateOnly)
-{
-    await using var scope = app.Services.CreateAsyncScope();
-    var db = scope.ServiceProvider.GetRequiredService<JobsDbContext>();
-    await db.Database.MigrateAsync();
-    app.Logger.LogInformation("Database migrations applied.");
-    return;
-}
 
 app.UseExceptionHandler();
 app.UseStatusCodePages();

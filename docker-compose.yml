@@ -4,10 +4,6 @@ name: craft-jobs
 # Local development credentials only.
 x-connection-string: &connection-string "Host=postgres;Port=5432;Database=craftjobs;Username=craftjobs;Password=craftjobs"
 
-x-api-build: &api-build
-  context: .
-  dockerfile: src/Jobs.Api/Dockerfile
-
 services:
   postgres:
     image: postgres:17-alpine
@@ -25,20 +21,22 @@ services:
       timeout: 5s
       retries: 30
 
-  # One-shot schema migration: runs before any API or worker instance starts.
+  # One-shot schema migration (EF Core migrations bundle): runs before any API or worker instance starts.
   migrate:
-    build: *api-build
-    image: craft-jobs-api
-    command: ["--migrate"]
-    environment:
-      ConnectionStrings__Jobs: *connection-string
+    build:
+      context: .
+      dockerfile: src/Jobs.Core/Migrations.Dockerfile
+    image: craft-jobs-migrations
+    command: ["--connection", *connection-string]
     depends_on:
       postgres:
         condition: service_healthy
     restart: "no"
 
   api:
-    build: *api-build
+    build:
+      context: .
+      dockerfile: src/Jobs.Api/Dockerfile
     image: craft-jobs-api
     environment:
       ConnectionStrings__Jobs: *connection-string
