@@ -23,7 +23,7 @@ It guards against three things: lost updates (ETag / If-Match), duplicate jobs f
 | EF Core migration `InitialCreate` | Generated with `dotnet ef`; `has-pending-model-changes` reports none. Applied outside the app (`dotnet ef database update` or a migrations bundle) |
 | Build | Debug and Release: 0 warnings, 0 errors (warnings are errors, including NuGet audit) |
 | Vulnerable packages | None (`dotnet list package --vulnerable --include-transitive`) |
-| Tests (domain + Testcontainers integration) | Written, not run yet |
+| Tests (domain + Testcontainers integration) | 38 of 38 pass. The exactly-once test passed 5 runs in a row |
 | CI, auth, observability | Not started (see next steps) |
 
 ## 1. How to run
@@ -157,6 +157,8 @@ dotnet ef migrations script --idempotent --project src/Jobs.Core --startup-proje
 
 ## 2. How it works
 
+The full walkthrough is in [docs/solution-breakdown.md](docs/solution-breakdown.md): architecture, concurrency, idempotency, the worker, transactions, failure timelines and trade-offs. Short version:
+
 ```
             ┌──────────────┐  job + export task      ┌──────────────────────────┐
  clients ──▶│ API (n)      │──── one transaction ───▶│ PostgreSQL               │
@@ -271,5 +273,5 @@ src/Jobs.Core     Domain (Job aggregate, state machine), EF Core model, migratio
 src/Jobs.Api      Minimal API endpoints, ETag / Idempotency-Key handling, ProblemDetails
 src/Jobs.Worker   Export loop, task claimer (SKIP LOCKED + fencing), fake accounting
 tests/Jobs.Tests  Domain unit tests; Testcontainers integration tests for API and worker
-docs/             Implementation plans and the AI usage log
+docs/             Solution breakdown (architecture and decisions), manual test plan, implementation plans, AI usage log
 ```

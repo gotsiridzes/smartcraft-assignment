@@ -15,7 +15,7 @@ Each entry has four parts: what was asked, what came back, what was wrong or cha
 
 ## Implementation
 
-The assistant first wrote the code without compiling it (my instruction). After that, `dotnet build` was run in Debug and Release: 0 warnings and 0 errors, with warnings treated as errors. The tests are written but have not been run yet.
+The assistant first wrote the code without compiling it (my instruction). After that, `dotnet build` was run in Debug and Release: 0 warnings and 0 errors, with warnings treated as errors. All 38 tests pass. The exactly-once contention test passed 5 runs in a row. The first run found one test bug: it read an HTTP response body twice, which an in-memory test server doesn't allow. The test now reads it once, and the JSON helper buffers the body first.
 
 | Area | What AI produced | Wrong / changed during writing | Verified by |
 | --- | --- | --- | --- |

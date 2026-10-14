@@ -62,8 +62,15 @@ internal static class JobsApi
     public static string ETagOf(HttpResponseMessage response)
         => response.Headers.ETag?.Tag ?? throw new InvalidOperationException($"Response {(int)response.StatusCode} has no ETag.");
 
+    /// <summary>
+    /// Buffers the body first, so a test can read the same response more than once
+    /// (an in-memory test-server stream can otherwise be read only once).
+    /// </summary>
     public static async Task<JsonElement> ReadJsonAsync(HttpResponseMessage response)
-        => await response.Content.ReadFromJsonAsync<JsonElement>();
+    {
+        await response.Content.LoadIntoBufferAsync();
+        return await response.Content.ReadFromJsonAsync<JsonElement>();
+    }
 
     /// <summary>The ProblemDetails <c>type</c>, which tells error kinds apart.</summary>
     public static async Task<string?> ProblemTypeOf(HttpResponseMessage response)

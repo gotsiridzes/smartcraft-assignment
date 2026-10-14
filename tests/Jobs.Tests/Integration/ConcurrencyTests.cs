@@ -26,11 +26,12 @@ public sealed class ConcurrencyTests(PostgresFixture postgres) : IAsyncLifetime
 
         responses.Count(r => r.StatusCode == HttpStatusCode.OK).ShouldBe(1);
         var loser = responses.Single(r => r.StatusCode == HttpStatusCode.PreconditionFailed);
-        (await JobsApi.ProblemTypeOf(loser)).ShouldBe(ProblemTypes.VersionMismatch);
+        var problem = await JobsApi.ReadJsonAsync(loser);
+        problem.GetProperty("type").GetString().ShouldBe(ProblemTypes.VersionMismatch);
 
         // Whichever path rejected it (stale read or failed UPDATE), the loser learns the current version.
         JobsApi.ETagOf(loser).ShouldBe("\"2\"");
-        (await JobsApi.ReadJsonAsync(loser)).GetProperty("currentVersion").GetInt32().ShouldBe(2);
+        problem.GetProperty("currentVersion").GetInt32().ShouldBe(2);
 
         var winner = responses.Single(r => r.StatusCode == HttpStatusCode.OK);
         var winnerName = (await JobsApi.ReadJsonAsync(winner)).GetProperty("customerName").GetString();
