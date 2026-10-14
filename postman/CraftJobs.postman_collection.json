@@ -1,0 +1,902 @@
+{
+  "info": {
+    "_postman_id": "6f1d8a52-3c1b-4e5a-9f0e-2b7c4d9a1e30",
+    "name": "Craft Jobs Service",
+    "description": "Endpoints and workflow of the Craft Jobs Service.\n\n1. Start the API (`dotnet run --project src/Jobs.Api`) and, for step 12, a worker (`dotnet run --project src/Jobs.Worker`).\n2. Run **1. Happy path** in order (Collection Runner works). Job id, ETags and line ids are captured automatically; every request asserts its expected response.\n3. Then run **2. Error contract**.\n\nThe ETag is the job version. Failure scenarios (accounting down, lost responses, lease takeover) are driven by worker settings: see docs/manual-test-plan.md.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "1. Happy path",
+      "item": [
+        {
+          "name": "1. Create a job",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{idempotencyKey}}"
+              }
+            ],
+            "url": "{{baseUrl}}/jobs",
+            "description": "Creates a Draft job at version 1. A fresh Idempotency-Key is generated on every run.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"customerName\": \"Fjord Elektro AS\",\n  \"siteAddress\": \"Storgata 1, 0155 Oslo\",\n  \"description\": \"Rewire kitchen\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('idempotencyKey', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));",
+                  "const job = pm.response.json();",
+                  "pm.test('ETag is \"1\"', () => pm.expect(pm.response.headers.get('ETag')).to.eql('\"1\"'));",
+                  "pm.test('Location points at the job', () => pm.expect(pm.response.headers.get('Location')).to.eql('/jobs/' + job.id));",
+                  "pm.test('New job is Draft with no lines', () => { pm.expect(job.status).to.eql('Draft'); pm.expect(job.lines).to.be.empty; pm.expect(job.export).to.be.null; });",
+                  "pm.collectionVariables.set('jobId', job.id);",
+                  "pm.collectionVariables.set('etag', pm.response.headers.get('ETag'));",
+                  "pm.collectionVariables.set('createBody', pm.response.text());"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2. Retry the same create (replay)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{idempotencyKey}}"
+              }
+            ],
+            "url": "{{baseUrl}}/jobs",
+            "description": "Same key and body: the first response is replayed, no second job is created.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"customerName\": \"Fjord Elektro AS\",\n  \"siteAddress\": \"Storgata 1, 0155 Oslo\",\n  \"description\": \"Rewire kitchen\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));",
+                  "pm.test('Marked as a replay', () => pm.expect(pm.response.headers.get('Idempotent-Replayed')).to.eql('true'));",
+                  "pm.test('Body identical to the first response', () => pm.expect(pm.response.text()).to.eql(pm.collectionVariables.get('createBody')));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "3. Get the job",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/jobs/{{jobId}}"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('ETag is the current version', () => pm.expect(pm.response.headers.get('ETag')).to.eql(pm.collectionVariables.get('etag')));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "4. Edit the header",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "If-Match",
+                "value": "{{etag}}"
+              }
+            ],
+            "url": "{{baseUrl}}/jobs/{{jobId}}",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"description\": \"Rewire kitchen and replace the fuse box\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('staleEtag', pm.collectionVariables.get('etag'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const previous = pm.collectionVariables.get('etag');",
+                  "const current = pm.response.headers.get('ETag');",
+                  "pm.test('ETag moved up by one', () => pm.expect(Number(current.replace(/\"/g, ''))).to.eql(Number(previous.replace(/\"/g, '')) + 1));",
+                  "if (pm.response.code === 200) { pm.collectionVariables.set('etag', current); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "5. Same edit with the stale ETag (412)",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "If-Match",
+                "value": "{{staleEtag}}"
+              }
+            ],
+            "url": "{{baseUrl}}/jobs/{{jobId}}",
+            "description": "Uses the ETag from before step 4: the precondition fails and nothing changes.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"description\": \"This edit loses\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('412 Precondition Failed', () => pm.response.to.have.status(412));",
+                  "pm.test('Problem type is version-mismatch', () => pm.expect(pm.response.json().type).to.match(/version-mismatch$/));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "6. Add a labour line (job moves to InProgress)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "If-Match",
+                "value": "{{etag}}"
+              }
+            ],
+            "url": "{{baseUrl}}/jobs/{{jobId}}/lines",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"Labour\",\n  \"description\": \"Electrician hours\",\n  \"quantity\": 2.5,\n  \"unitPrice\": 650.0\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const previous = pm.collectionVariables.get('etag');",
+                  "const current = pm.response.headers.get('ETag');",
+                  "pm.test('ETag moved up by one', () => pm.expect(Number(current.replace(/\"/g, ''))).to.eql(Number(previous.replace(/\"/g, '')) + 1));",
+                  "if (pm.response.code === 200) { pm.collectionVariables.set('etag', current); }",
+                  "pm.test('Total is 1625', () => pm.expect(pm.response.json().total).to.eql(1625));",
+                  "const job = pm.response.json();",
+                  "pm.test('Job is InProgress', () => pm.expect(job.status).to.eql('InProgress'));",
+                  "pm.collectionVariables.set('labourLineId', job.lines.find(l => l.type === 'Labour').id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "7. Add a material line",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "If-Match",
+                "value": "{{etag}}"
+              }
+            ],
+            "url": "{{baseUrl}}/jobs/{{jobId}}/lines",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"Material\",\n  \"description\": \"Cable 3x2.5 mm2\",\n  \"quantity\": 10,\n  \"unitPrice\": 12.35\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const previous = pm.collectionVariables.get('etag');",
+                  "const current = pm.response.headers.get('ETag');",
+                  "pm.test('ETag moved up by one', () => pm.expect(Number(current.replace(/\"/g, ''))).to.eql(Number(previous.replace(/\"/g, '')) + 1));",
+                  "if (pm.response.code === 200) { pm.collectionVariables.set('etag', current); }",
+                  "pm.test('Total is 1748.5', () => pm.expect(pm.response.json().total).to.eql(1748.5));",
+                  "pm.collectionVariables.set('materialLineId', pm.response.json().lines.find(l => l.type === 'Material').id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "8. Correct the labour hours",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "If-Match",
+                "value": "{{etag}}"
+              }
+            ],
+            "url": "{{baseUrl}}/jobs/{{jobId}}/lines/{{labourLineId}}",
+            "description": "A line change bumps the job version: the job is the aggregate root.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"quantity\": 3\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const previous = pm.collectionVariables.get('etag');",
+                  "const current = pm.response.headers.get('ETag');",
+                  "pm.test('ETag moved up by one', () => pm.expect(Number(current.replace(/\"/g, ''))).to.eql(Number(previous.replace(/\"/g, '')) + 1));",
+                  "if (pm.response.code === 200) { pm.collectionVariables.set('etag', current); }",
+                  "pm.test('Total is 2073.5', () => pm.expect(pm.response.json().total).to.eql(2073.5));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "9. Delete the material line",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "If-Match",
+                "value": "{{etag}}"
+              }
+            ],
+            "url": "{{baseUrl}}/jobs/{{jobId}}/lines/{{materialLineId}}"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const previous = pm.collectionVariables.get('etag');",
+                  "const current = pm.response.headers.get('ETag');",
+                  "pm.test('ETag moved up by one', () => pm.expect(Number(current.replace(/\"/g, ''))).to.eql(Number(previous.replace(/\"/g, '')) + 1));",
+                  "if (pm.response.code === 200) { pm.collectionVariables.set('etag', current); }",
+                  "pm.test('Total is 1950', () => pm.expect(pm.response.json().total).to.eql(1950));",
+                  "pm.test('One line left', () => pm.expect(pm.response.json().lines).to.have.lengthOf(1));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "10. Complete the job (export queued)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "If-Match",
+                "value": "{{etag}}"
+              }
+            ],
+            "url": "{{baseUrl}}/jobs/{{jobId}}/complete",
+            "description": "Freezes the job and creates its export task in the same transaction."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const previous = pm.collectionVariables.get('etag');",
+                  "const current = pm.response.headers.get('ETag');",
+                  "pm.test('ETag moved up by one', () => pm.expect(Number(current.replace(/\"/g, ''))).to.eql(Number(previous.replace(/\"/g, '')) + 1));",
+                  "if (pm.response.code === 200) { pm.collectionVariables.set('etag', current); }",
+                  "const job = pm.response.json();",
+                  "pm.test('Job is Completed', () => pm.expect(job.status).to.eql('Completed'));",
+                  "pm.test('Export is queued', () => { pm.expect(job.export.status).to.eql('Pending'); pm.expect(job.export.attempts).to.eql(0); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "11. Change a completed job (409)",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "If-Match",
+                "value": "{{etag}}"
+              }
+            ],
+            "url": "{{baseUrl}}/jobs/{{jobId}}/lines/{{labourLineId}}"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('409 Conflict', () => pm.response.to.have.status(409));",
+                  "pm.test('Problem type is job-state-conflict', () => pm.expect(pm.response.json().type).to.match(/job-state-conflict$/));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "12. Watch the export (needs a running worker)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/jobs/{{jobId}}",
+            "description": "Waits 3 seconds first. If the job is still Completed, start a worker (dotnet run --project src/Jobs.Worker) and send this request again."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "setTimeout(() => {}, 3000);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const job = pm.response.json();",
+                  "pm.test('Job is Exported', () => pm.expect(job.status).to.eql('Exported'));",
+                  "pm.test('Export Succeeded with an invoice id', () => { pm.expect(job.export.status).to.eql('Succeeded'); pm.expect(job.export.externalInvoiceId).to.be.a('string'); });",
+                  "pm.test('Exporting bumped the version', () => pm.expect(Number(pm.response.headers.get('ETag').replace(/\"/g, ''))).to.eql(Number(pm.collectionVariables.get('etag').replace(/\"/g, '')) + 1));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "13. List exported jobs",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/jobs?status=Exported"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('The job is listed', () => pm.expect(pm.response.json().map(j => j.id)).to.include(pm.collectionVariables.get('jobId')));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "14. Write without If-Match (428)",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/jobs/{{jobId}}",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"description\": \"No precondition\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('428 Precondition Required', () => pm.response.to.have.status(428));",
+                  "pm.test('Problem type is precondition-required', () => pm.expect(pm.response.json().type).to.match(/precondition-required$/));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/health"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('Healthy (database reachable)', () => pm.expect(pm.response.text()).to.eql('Healthy'));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "2. Error contract",
+      "item": [
+        {
+          "name": "Reuse the key with a different body (422)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{idempotencyKey}}"
+              }
+            ],
+            "url": "{{baseUrl}}/jobs",
+            "description": "Reuses the key from '1. Create a job', so run the happy path first.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"customerName\": \"Another customer\",\n  \"siteAddress\": \"Storgata 1, 0155 Oslo\",\n  \"description\": \"Rewire kitchen\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('422 Unprocessable Entity', () => pm.response.to.have.status(422));",
+                  "pm.test('Problem type is idempotency-key-reused', () => pm.expect(pm.response.json().type).to.match(/idempotency-key-reused$/));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create without Idempotency-Key (400)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/jobs",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"customerName\": \"Fjord Elektro AS\",\n  \"siteAddress\": \"Storgata 1, 0155 Oslo\",\n  \"description\": \"Rewire kitchen\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400 Bad Request', () => pm.response.to.have.status(400));",
+                  "pm.test('Problem type is idempotency-key-missing', () => pm.expect(pm.response.json().type).to.match(/idempotency-key-missing$/));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Body that is not JSON (400)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{$guid}}"
+              }
+            ],
+            "url": "{{baseUrl}}/jobs",
+            "body": {
+              "mode": "raw",
+              "raw": "{ \"customerName\": \"Fjord Elektro AS\" }\n@jobId = 1"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400 Bad Request', () => pm.response.to.have.status(400));",
+                  "pm.test('Problem type is invalid-request', () => pm.expect(pm.response.json().type).to.match(/invalid-request$/));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create a draft job for the error cases",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{$guid}}"
+              }
+            ],
+            "url": "{{baseUrl}}/jobs",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"customerName\": \"Error case customer\",\n  \"siteAddress\": \"Storgata 1, 0155 Oslo\",\n  \"description\": \"Rewire kitchen\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('draftJobId', pm.response.json().id);",
+                  "pm.collectionVariables.set('draftEtag', pm.response.headers.get('ETag'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Complete a job without lines (409)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "If-Match",
+                "value": "{{draftEtag}}"
+              }
+            ],
+            "url": "{{baseUrl}}/jobs/{{draftJobId}}/complete"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('409 Conflict', () => pm.response.to.have.status(409));",
+                  "pm.test('Problem type is job-state-conflict', () => pm.expect(pm.response.json().type).to.match(/job-state-conflict$/));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Invalid line (400 with field errors)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "If-Match",
+                "value": "{{draftEtag}}"
+              }
+            ],
+            "url": "{{baseUrl}}/jobs/{{draftJobId}}/lines",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"Material\",\n  \"description\": \"Cable\",\n  \"quantity\": 0,\n  \"unitPrice\": 1.234\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400 Bad Request', () => pm.response.to.have.status(400));",
+                  "pm.test('Problem type is validation-error', () => pm.expect(pm.response.json().type).to.match(/validation-error$/));",
+                  "pm.test('Errors for quantity and unitPrice', () => pm.expect(pm.response.json().errors).to.have.all.keys('quantity', 'unitPrice'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Weak If-Match (400)",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "If-Match",
+                "value": "W/{{draftEtag}}"
+              }
+            ],
+            "url": "{{baseUrl}}/jobs/{{draftJobId}}",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"description\": \"Weak tag\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400 Bad Request', () => pm.response.to.have.status(400));",
+                  "pm.test('Problem type is invalid-if-match', () => pm.expect(pm.response.json().type).to.match(/invalid-if-match$/));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Unknown line (404)",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "If-Match",
+                "value": "{{draftEtag}}"
+              }
+            ],
+            "url": "{{baseUrl}}/jobs/{{draftJobId}}/lines/{{$guid}}"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('404 Not Found', () => pm.response.to.have.status(404));",
+                  "pm.test('Problem type is line-not-found', () => pm.expect(pm.response.json().type).to.match(/line-not-found$/));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Unknown job (404)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/jobs/{{$guid}}"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('404 Not Found', () => pm.response.to.have.status(404));",
+                  "pm.test('Problem type is job-not-found', () => pm.expect(pm.response.json().type).to.match(/job-not-found$/));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Unknown status filter (400)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/jobs?status=Paid"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400 Bad Request', () => pm.response.to.have.status(400));",
+                  "pm.test('Problem type is invalid-status', () => pm.expect(pm.response.json().type).to.match(/invalid-status$/));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8080"
+    },
+    {
+      "key": "idempotencyKey",
+      "value": ""
+    },
+    {
+      "key": "jobId",
+      "value": ""
+    },
+    {
+      "key": "etag",
+      "value": ""
+    },
+    {
+      "key": "staleEtag",
+      "value": ""
+    },
+    {
+      "key": "createBody",
+      "value": ""
+    },
+    {
+      "key": "labourLineId",
+      "value": ""
+    },
+    {
+      "key": "materialLineId",
+      "value": ""
+    },
+    {
+      "key": "draftJobId",
+      "value": ""
+    },
+    {
+      "key": "draftEtag",
+      "value": ""
+    }
+  ]
+}

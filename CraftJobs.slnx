@@ -6,6 +6,7 @@
     <File Path="docker-compose.yml" />
     <File Path="dotnet-tools.json" />
     <File Path="global.json" />
+    <File Path="postman/CraftJobs.postman_collection.json" />
     <File Path="README.md" />
     <File Path="requests.http" />
   </Folder>

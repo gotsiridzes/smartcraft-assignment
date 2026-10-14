@@ -50,6 +50,7 @@ This starts PostgreSQL and runs the one-shot `migrate` service, an EF Core migra
 | OpenAPI document | http://localhost:8080/openapi/v1.json |
 | Health | http://localhost:8080/health |
 | Full demo flow | [requests.http](requests.http) (Visual Studio, Rider, VS Code REST Client) |
+| Postman collection | [postman/CraftJobs.postman_collection.json](postman/CraftJobs.postman_collection.json): happy path and error contract, with assertions; runs in the Collection Runner |
 
 The ETag is the job version. It starts at `"1"` and goes up by one with every change.
 

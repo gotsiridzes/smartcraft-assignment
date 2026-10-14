@@ -1,12 +1,11 @@
+@baseUrl = http://localhost:8080
+
 # Demo flow for the Craft Jobs API. Works in Visual Studio, Rider and VS Code (REST Client).
 # Start the API (dotnet run --project src/Jobs.Api) and at least one worker, or use docker compose.
 # The job version is the ETag: it starts at "1" and goes up by one with every change.
 # Change the Idempotency-Key in requests 1 and 2 to run the flow again on a new job.
-#
-# Note: everything between two ### lines belongs to one request, so values from earlier
-# responses are referenced inline ({{createJob.response.body.$.id}}), never declared after a body.
-
-@baseUrl = http://localhost:8080
+# Values from earlier responses are referenced inline, because a variable line placed after a
+# request body would be sent as part of that body.
 
 ### 1. Create a job (201, ETag "1")
 # @name createJob
