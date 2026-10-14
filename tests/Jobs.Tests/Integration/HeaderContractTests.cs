@@ -131,6 +131,22 @@ public sealed class HeaderContractTests(PostgresFixture postgres) : IAsyncLifeti
         json.GetProperty("errors").TryGetProperty("unitPrice", out _).ShouldBeTrue();
     }
 
+    [Fact]
+    public async Task A_body_that_is_not_json_returns_400()
+    {
+        var client = postgres.CreateApiClient();
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/jobs")
+        {
+            Content = new StringContent("{ \"customerName\": \"Fjord\" }\n@jobId = 1", System.Text.Encoding.UTF8, "application/json"),
+        };
+        request.Headers.Add("Idempotency-Key", Guid.NewGuid().ToString());
+
+        using var response = await client.SendAsync(request);
+
+        response.StatusCode.ShouldBe(HttpStatusCode.BadRequest);
+        (await JobsApi.ProblemTypeOf(response)).ShouldBe(ProblemTypes.InvalidRequest);
+    }
+
     private static async Task<(Guid JobId, Guid LineId, string ETag)> CompletedJobAsync(HttpClient client)
     {
         var (jobId, etag) = await JobsApi.CreateJobAsync(client);

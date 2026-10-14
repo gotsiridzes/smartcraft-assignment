@@ -8,6 +8,7 @@ public static class ProblemTypes
     private const string Base = "https://craft-jobs.example/problems/";
 
     public const string Validation = Base + "validation-error";
+    public const string InvalidRequest = Base + "invalid-request";
     public const string IdempotencyKeyMissing = Base + "idempotency-key-missing";
     public const string InvalidIfMatch = Base + "invalid-if-match";
     public const string InvalidStatus = Base + "invalid-status";

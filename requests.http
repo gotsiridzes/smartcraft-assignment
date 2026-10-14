@@ -1,7 +1,10 @@
 # Demo flow for the Craft Jobs API. Works in Visual Studio, Rider and VS Code (REST Client).
-# Start everything first: docker compose up --build --scale worker=3
+# Start the API (dotnet run --project src/Jobs.Api) and at least one worker, or use docker compose.
 # The job version is the ETag: it starts at "1" and goes up by one with every change.
-# Change the Idempotency-Key below to create another job.
+# Change the Idempotency-Key in requests 1 and 2 to run the flow again on a new job.
+#
+# Note: everything between two ### lines belongs to one request, so values from earlier
+# responses are referenced inline ({{createJob.response.body.$.id}}), never declared after a body.
 
 @baseUrl = http://localhost:8080
 
@@ -28,13 +31,11 @@ Idempotency-Key: demo-job-0001
   "description": "Rewire kitchen"
 }
 
-@jobId = {{createJob.response.body.$.id}}
-
 ### 3. Get the job (ETag "1")
-GET {{baseUrl}}/jobs/{{jobId}}
+GET {{baseUrl}}/jobs/{{createJob.response.body.$.id}}
 
 ### 4. Edit the header (200, ETag "2")
-PATCH {{baseUrl}}/jobs/{{jobId}}
+PATCH {{baseUrl}}/jobs/{{createJob.response.body.$.id}}
 Content-Type: application/json
 If-Match: "1"
 
@@ -43,7 +44,7 @@ If-Match: "1"
 }
 
 ### 5. Same edit with the stale ETag "1": 412, nothing changes
-PATCH {{baseUrl}}/jobs/{{jobId}}
+PATCH {{baseUrl}}/jobs/{{createJob.response.body.$.id}}
 Content-Type: application/json
 If-Match: "1"
 
@@ -53,7 +54,7 @@ If-Match: "1"
 
 ### 6. Add a labour line: job moves to InProgress (ETag "3")
 # @name labourLine
-POST {{baseUrl}}/jobs/{{jobId}}/lines
+POST {{baseUrl}}/jobs/{{createJob.response.body.$.id}}/lines
 Content-Type: application/json
 If-Match: "2"
 
@@ -66,7 +67,7 @@ If-Match: "2"
 
 ### 7. Add a material line (ETag "4")
 # @name materialLine
-POST {{baseUrl}}/jobs/{{jobId}}/lines
+POST {{baseUrl}}/jobs/{{createJob.response.body.$.id}}/lines
 Content-Type: application/json
 If-Match: "3"
 
@@ -77,11 +78,8 @@ If-Match: "3"
   "unitPrice": 12.35
 }
 
-@labourLineId = {{labourLine.response.body.$.lines[0].id}}
-@materialLineId = {{materialLine.response.body.$.lines[1].id}}
-
 ### 8. Correct the labour hours (ETag "5")
-PATCH {{baseUrl}}/jobs/{{jobId}}/lines/{{labourLineId}}
+PATCH {{baseUrl}}/jobs/{{createJob.response.body.$.id}}/lines/{{labourLine.response.body.$.lines[0].id}}
 Content-Type: application/json
 If-Match: "4"
 
@@ -90,25 +88,25 @@ If-Match: "4"
 }
 
 ### 9. Delete the material line (ETag "6")
-DELETE {{baseUrl}}/jobs/{{jobId}}/lines/{{materialLineId}}
+DELETE {{baseUrl}}/jobs/{{createJob.response.body.$.id}}/lines/{{materialLine.response.body.$.lines[1].id}}
 If-Match: "5"
 
 ### 10. Complete the job: frozen, export queued in the same transaction (ETag "7")
-POST {{baseUrl}}/jobs/{{jobId}}/complete
+POST {{baseUrl}}/jobs/{{createJob.response.body.$.id}}/complete
 If-Match: "6"
 
 ### 11. Changing a completed job: 409
-DELETE {{baseUrl}}/jobs/{{jobId}}/lines/{{labourLineId}}
+DELETE {{baseUrl}}/jobs/{{createJob.response.body.$.id}}/lines/{{labourLine.response.body.$.lines[0].id}}
 If-Match: "7"
 
-### 12. Watch the export: status goes Completed -> Exported, export.status Pending -> Succeeded
-GET {{baseUrl}}/jobs/{{jobId}}
+### 12. Watch the export: status goes Completed -> Exported, export.status Pending -> Succeeded (ETag "8")
+GET {{baseUrl}}/jobs/{{createJob.response.body.$.id}}
 
 ### 13. List exported jobs
 GET {{baseUrl}}/jobs?status=Exported
 
 ### 14. Write without If-Match: 428
-PATCH {{baseUrl}}/jobs/{{jobId}}
+PATCH {{baseUrl}}/jobs/{{createJob.response.body.$.id}}
 Content-Type: application/json
 
 {

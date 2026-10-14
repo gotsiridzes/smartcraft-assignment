@@ -13,6 +13,9 @@ builder.Services.AddSingleton(TimeProvider.System);
 
 builder.Services.AddProblemDetails();
 builder.Services.AddExceptionHandler<DomainExceptionHandler>();
+// Unreadable bodies and parameters become BadHttpRequestException in every environment, so
+// DomainExceptionHandler answers them with the same ProblemDetails type (by default only Development throws).
+builder.Services.Configure<RouteHandlerOptions>(options => options.ThrowOnBadRequest = true);
 builder.Services.ConfigureHttpJsonOptions(options => options.SerializerOptions.Converters.Add(new JsonStringEnumConverter()));
 builder.Services.AddOpenApi();
 builder.Services.AddHealthChecks().AddDbContextCheck<JobsDbContext>();
