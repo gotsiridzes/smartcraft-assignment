@@ -1,0 +1,67 @@
+# docker compose up --build --scale worker=3
+name: craft-jobs
+
+# Local development credentials only.
+x-connection-string: &connection-string "Host=postgres;Port=5432;Database=craftjobs;Username=craftjobs;Password=craftjobs"
+
+x-api-build: &api-build
+  context: .
+  dockerfile: src/Jobs.Api/Dockerfile
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: craftjobs
+      POSTGRES_USER: craftjobs
+      POSTGRES_PASSWORD: craftjobs
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U craftjobs -d craftjobs"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  # One-shot schema migration: runs before any API or worker instance starts.
+  migrate:
+    build: *api-build
+    image: craft-jobs-api
+    command: ["--migrate"]
+    environment:
+      ConnectionStrings__Jobs: *connection-string
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    build: *api-build
+    image: craft-jobs-api
+    environment:
+      ConnectionStrings__Jobs: *connection-string
+    ports:
+      - "8080:8080"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  worker:
+    build:
+      context: .
+      dockerfile: src/Jobs.Worker/Dockerfile
+    image: craft-jobs-worker
+    environment:
+      ConnectionStrings__Jobs: *connection-string
+      FakeAccounting__FailBeforeRate: "0.1"
+      FakeAccounting__FailAfterRate: "0.05"
+      FakeAccounting__LatencyMin: "00:00:00.100"
+      FakeAccounting__LatencyMax: "00:00:00.800"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+volumes:
+  pgdata:
