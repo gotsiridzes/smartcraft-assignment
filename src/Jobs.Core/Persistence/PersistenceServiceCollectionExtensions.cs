@@ -17,7 +17,7 @@ public static class PersistenceServiceCollectionExtensions
     public static IServiceCollection AddJobsPersistence(this IServiceCollection services, Func<IServiceProvider, string> connectionString)
     {
         services.AddSingleton(sp => new NpgsqlDataSourceBuilder(connectionString(sp))
-            .UseLoggerFactory(sp.GetService<ILoggerFactory>())
+            .UseLoggerFactory(sp.GetRequiredService<ILoggerFactory>())
             .Build());
 
         services.AddDbContextFactory<JobsDbContext>((sp, options) => options.UseJobsNpgsql(sp.GetRequiredService<NpgsqlDataSource>()));

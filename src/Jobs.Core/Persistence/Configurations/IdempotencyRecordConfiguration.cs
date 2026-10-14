@@ -8,7 +8,7 @@ internal sealed class IdempotencyRecordConfiguration : IEntityTypeConfiguration<
     public void Configure(EntityTypeBuilder<IdempotencyRecord> builder)
     {
         builder.ToTable("idempotency_keys");
-        builder.HasKey(r => r.Key).HasName(IdempotencyConstraints.PrimaryKey);
+        builder.HasKey(r => r.Key).HasName(DatabaseConstraints.IdempotencyKeyPrimaryKey);
 
         builder.Property(r => r.Key).HasMaxLength(IdempotencyRecord.KeyMaxLength);
         builder.Property(r => r.RequestHash).HasMaxLength(64).IsRequired();
@@ -17,10 +17,4 @@ internal sealed class IdempotencyRecordConfiguration : IEntityTypeConfiguration<
         builder.Property(r => r.ResponseBody).HasColumnType("text").IsRequired();
         builder.Property(r => r.ResponseEtag).HasMaxLength(32).IsRequired();
     }
-}
-
-public static class IdempotencyConstraints
-{
-    /// <summary>Name of the primary key whose unique violation means "this key was already used".</summary>
-    public const string PrimaryKey = "pk_idempotency_keys";
 }

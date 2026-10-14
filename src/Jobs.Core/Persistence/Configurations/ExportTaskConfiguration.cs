@@ -18,7 +18,7 @@ internal sealed class ExportTaskConfiguration : IEntityTypeConfiguration<ExportT
         builder.Property(t => t.ExternalInvoiceId).HasMaxLength(ExportTask.ExternalInvoiceIdMaxLength);
 
         // One export per job: the database guarantee behind "never two invoices".
-        builder.HasIndex(t => t.JobId).IsUnique().HasDatabaseName("ix_export_tasks_job_id");
+        builder.HasIndex(t => t.JobId).IsUnique().HasDatabaseName(DatabaseConstraints.ExportTaskUniqueJob);
         builder.HasIndex(t => new { t.Status, t.NextAttemptAt }).HasDatabaseName("ix_export_tasks_status_next_attempt_at");
     }
 }
